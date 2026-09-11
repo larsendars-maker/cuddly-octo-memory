@@ -5,3 +5,15 @@ node_modules/
 .DS_Store
 *.log
 coverage/
+
+# Local/generated secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.secret
+.env.local
+.env.production
+secrets/
+private/

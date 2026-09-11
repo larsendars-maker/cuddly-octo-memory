@@ -1,0 +1,4 @@
+.env* text linguist-language=Shell
+*.key -diff
+*.pem -diff
+*.p12 -diff

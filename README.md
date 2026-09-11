@@ -21,3 +21,6 @@ Admin panel includes accounts, history, audit, admins and mail connection status
 
 ## v20 mail fix
 Verification email delivery now uses Resend over HTTPS; old SMTP/Gmail-sender settings are no longer required. Public auth endpoints are also exempted from the CSRF middleware so code confirmation/resend cannot fail with `CSRF_FAILED`.
+
+## Безопасность GitHub
+Не коммить `DATABASE_URL`, `MAIL_BRIDGE_TOKEN`, `PHOTO_ENCRYPTION_KEY`, `GOOGLE_CLIENT_SECRET` или любые API-ключи. Секреты задаются в Render Environment; токен Google Apps Script хранится в Script Properties. Для приватного исходного кода сделай репозиторий GitHub Private.
