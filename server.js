@@ -68,7 +68,7 @@ const securityHeaders = helmet({
 });
 app.use(securityHeaders);
 app.use((req,res,next)=>{ res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'dist'), { extensions: ['html'], etag: true, maxAge: '1h' }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 25, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
@@ -94,7 +94,7 @@ function rank(xp) {
 }
 function send(ws, data) { if (ws.readyState === 1) ws.send(JSON.stringify(data)); }
 function normalizeSettings(s = {}) {
-  const allowedThemes = ['midnight', 'graphite', 'light', 'amoled'];
+  const allowedThemes = ['midnight', 'graphite', 'light', 'amoled', 'ocean', 'sunset'];
   return {
     theme: allowedThemes.includes(s.theme) ? s.theme : 'midnight',
     accent: /^#[0-9a-f]{6}$/i.test(s.accent || '') ? s.accent : '#68a1ff',
@@ -106,23 +106,58 @@ function normalizeSettings(s = {}) {
     showClock: s.showClock !== false,
     displayName: String(s.displayName || '').slice(0, 40),
     bio: String(s.bio || '').slice(0, 240),
-    avatarUrl: validUrl(s.avatarUrl) ? s.avatarUrl : ''
+    avatarUrl: (validUrl(s.avatarUrl) || String(s.avatarUrl||'').startsWith('data:image/')) ? String(s.avatarUrl).slice(0, 2_000_000) : '',
+    particlesEnabled: Boolean(s.particlesEnabled),
+    particleColor: /^#[0-9a-f]{6}$/i.test(s.particleColor || '') ? s.particleColor : '#8ab4ff',
+    particleDensity: Math.max(8, Math.min(72, Number(s.particleDensity) || 24)),
+    particleMaxSize: Math.max(2, Math.min(6, Number(s.particleMaxSize) || 4)),
+    particleSpeed: Math.max(0.1, Math.min(1.5, Number(s.particleSpeed) || 0.45))
   };
 }
 
 app.get('/health', async (_req, res) => { try { await q('select 1'); res.json({ ok: true, service: 'OrbitDesk', db: dbMode() }); } catch { res.status(503).json({ ok: false, service: 'OrbitDesk', db: false }); } });
-app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(role)).map(({roles,...x})=>x) }); });
+app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(role)).sort((a,b)=>b.popularity-a.popularity).map(({roles,popularity,...x})=>x) }); });
 
 const PRESET_SITES = [
-  { id: 'gdz', title: 'ГДЗ', url: 'https://gdz.top/', icon: '📚', category: 'study', roles: ['user','assistant','admin'] },
-  { id: 'vk', title: 'VK', url: 'https://vk.com/', icon: '💬', category: 'social', roles: ['user','assistant','admin'] },
-  { id: 'evolve', title: 'Evolve RP', url: 'https://evolve-rp.su/', icon: '🎮', category: 'rp', roles: ['assistant','admin'] },
-  { id: 'sfpd', title: 'SFPD DB', url: 'https://sfpd-gov.ru/db/', icon: '🛡️', category: 'rp', roles: ['assistant','admin'] },
-  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com/', icon: '▶️', category: 'media', roles: ['user','assistant','admin'] },
-  { id: 'google', title: 'Google', url: 'https://www.google.com/', icon: '🔎', category: 'web', roles: ['user','assistant','admin'] },
-  { id: 'lichess', title: 'Lichess', url: 'https://lichess.org/', icon: '♟️', category: 'games', roles: ['user','assistant','admin'] },
-  { id: 'crazygames', title: 'CrazyGames', url: 'https://www.crazygames.com/', icon: '🎯', category: 'games', roles: ['assistant','admin'] }
+  {id:'google-docs',title:'Google Docs',url:'https://docs.google.com/document/',icon:'📝',category:'productivity',popularity:99,roles:['user','assistant','admin']},
+  {id:'google-sheets',title:'Google Sheets',url:'https://docs.google.com/spreadsheets/',icon:'📊',category:'productivity',popularity:98,roles:['user','assistant','admin']},
+  {id:'google-drive',title:'Google Drive',url:'https://drive.google.com/',icon:'📁',category:'productivity',popularity:97,roles:['user','assistant','admin']},
+  { id:'vk', title:'VK', url:'https://vk.com/', icon:'💬', category:'social', roles:['user','assistant','admin'], popularity:100 },
+  { id:'youtube', title:'YouTube', url:'https://www.youtube.com/', icon:'▶️', category:'media', roles:['user','assistant','admin'], popularity:98 },
+  { id:'google', title:'Google', url:'https://www.google.com/', icon:'🔎', category:'web', roles:['user','assistant','admin'], popularity:97 },
+  { id:'github', title:'GitHub', url:'https://github.com/', icon:'🐙', category:'dev', roles:['user','assistant','admin'], popularity:96 },
+  { id:'wikipedia', title:'Wikipedia', url:'https://www.wikipedia.org/', icon:'🌐', category:'reference', roles:['user','assistant','admin'], popularity:93 },
+  { id:'discord', title:'Discord', url:'https://discord.com/app', icon:'🎧', category:'social', roles:['user','assistant','admin'], popularity:92 },
+  { id:'lichess', title:'Lichess', url:'https://lichess.org/', icon:'♟️', category:'games', roles:['user','assistant','admin'], popularity:88 },
+  { id:'steam', title:'Steam', url:'https://store.steampowered.com/', icon:'🎮', category:'games', roles:['user','assistant','admin'], popularity:87 },
+  { id:'evolve', title:'Evolve RP', url:'https://evolve-rp.su/', icon:'🎮', category:'rp', roles:['assistant','admin'], popularity:80 },
+  { id:'sfpd', title:'SFPD DB', url:'https://sfpd-gov.ru/db/', icon:'🛡️', category:'rp', roles:['assistant','admin'], popularity:78 },
+  { id:'crazygames', title:'CrazyGames', url:'https://www.crazygames.com/', icon:'🎯', category:'games', roles:['assistant','admin'], popularity:70 }
 ];
+
+
+app.get('/api/sites/suggest', requireAuth, async (req,res)=>{
+  const qstr=String(req.query.q||'').trim().toLowerCase().slice(0,80);
+  const roleRow=await q('select role from users where id=$1',[req.user.sub]);
+  const role=roleRow.rows[0]?.role||'user';
+  const base=PRESET_SITES.filter(x=>x.roles.includes(role)).map(x=>({...x,score:x.popularity,uses:0}));
+  const [bm,vis]=await Promise.all([
+    q('select id,title,url,shortcut,icon,category from bookmarks where user_id=$1 order by position,id',[req.user.sub]),
+    q('select id,url,title,visited_at from visits where user_id=$1 order by visited_at desc limit 500',[req.user.sub])
+  ]);
+  const counts=new Map(); for(const x of vis.rows){const key=String(x.url);counts.set(key,(counts.get(key)||0)+1);}
+  const merged=new Map();
+  for(const x of base) merged.set(x.url,{id:x.id,title:x.title,url:x.url,icon:x.icon,category:x.category,score:x.score+(counts.get(x.url)||0)*5,uses:counts.get(x.url)||0});
+  for(const x of bm.rows){const key=x.url;const item={id:`b-${x.id}`,title:x.title,url:x.url,icon:x.icon,category:x.category,score:62+(counts.get(key)||0)*7,uses:counts.get(key)||0};if(!merged.has(key)||qstr&&x.title.toLowerCase().includes(qstr))merged.set(key,item);}
+  for(const [url,uses] of counts){if(!merged.has(url))merged.set(url,{id:`h-${url}`,title:url.replace(/^https?:\/\//,'').slice(0,42),url,icon:'🌐',category:'history',score:35+uses*9,uses});}
+  let arr=[...merged.values()]; if(qstr)arr=arr.filter(x=>`${x.title} ${x.url}`.toLowerCase().includes(qstr)); arr.sort((a,b)=>b.score-a.score); res.json({suggestions:arr.slice(0,10)});
+});
+app.post('/api/sites/add', requireAuth, async (req,res)=>{
+  const title=String(req.body?.title||'').trim().slice(0,120),url=String(req.body?.url||'').trim();
+  if(!title||!validUrl(url))return res.status(400).json({error:'BAD_SITE'});
+  const r=await q('insert into bookmarks(user_id,title,url,shortcut,icon,category) values($1,$2,$3,$4,$5,$6) returning *',[req.user.sub,title,url,String(req.body?.shortcut||'').slice(0,40),String(req.body?.icon||'🌐').slice(0,8),'custom']);
+  res.json(r.rows[0]);
+});
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -138,14 +173,13 @@ app.post('/api/auth/register', async (req, res) => {
     const role = bootstrapAdmin ? 'admin' : 'user';
     const r = await q('insert into users(username,email,password_hash,xp,role,email_verified) values($1,$2,$3,50,$4,false) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role]);
     const user = r.rows[0];
-    const verifyToken = crypto.randomBytes(32).toString('base64url');
-    await q("insert into email_verifications(user_id,token_hash,expires_at) values($1,$2,now()+interval '24 hours')",[user.id,sha256(verifyToken)]);
-    if (mailer) { const base=`${req.protocol}://${req.get('host')}`; await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:user.email,subject:'OrbitDesk: подтверждение почты',html:`<h2>OrbitDesk</h2><p>Подтверди почту:</p><p><a href="${base}/api/auth/verify-email?token=${encodeURIComponent(verifyToken)}">Подтвердить email</a></p>`}); } else { console.warn(`[OrbitDesk] SMTP is not configured. Verification URL for ${user.email}: /api/auth/verify-email?token=${verifyToken}`); }
-    await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
-    const session = await createSession(user.id);
-    setCookie(res, 'od_session', session, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'Strict', maxAge: 60 * 60 * 24 * 14 });
-    issueCsrf(res);
-    res.json({ user: { ...user, rank: rank(user.xp) } });
+    if (!mailer && String(process.env.NODE_ENV || 'production') === 'production') return res.status(503).json({ error:'SMTP_NOT_CONFIGURED' });
+    const code=String(Math.floor(100000+Math.random()*900000));
+    await q('delete from email_verification_codes where user_id=$1',[user.id]);
+    await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
+    if(mailer) await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:user.email,subject:'OrbitDesk: код подтверждения',text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
+    await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
+    res.json({pendingVerification:true,email:user.email,username:user.username});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -165,7 +199,8 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
-app.get('/api/auth/verify-email', async (req,res)=>{ try{ const token=String(req.query.token||''); if(!token) return res.status(400).send('Неверная ссылка'); const r=await q('select user_id from email_verifications where token_hash=$1 and expires_at>now()',[sha256(token)]); if(!r.rowCount) return res.status(400).send('Ссылка недействительна или истекла'); await q('update users set email_verified=true,email_verified_at=now() where id=$1',[r.rows[0].user_id]); await q('delete from email_verifications where user_id=$1',[r.rows[0].user_id]); await audit(r.rows[0].user_id,'email.verified'); res.send('<h2>OrbitDesk</h2><p>Почта подтверждена. Можно закрыть эту страницу и войти в OrbitDesk.</p>'); }catch{ res.status(500).send('Ошибка подтверждения'); }});
+app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
+app.get('/api/auth/verify-email', async (_req,res)=>res.status(410).send('Подтверждение теперь проходит кодом из письма. Вернитесь в OrbitDesk.'));
 
 app.post('/api/auth/logout', requireAuth, async (req, res) => {
   await destroySession(getCookie(req, 'od_session'));
@@ -174,13 +209,27 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
 });
 
 app.get('/api/me', requireAuth, async (req, res) => {
-  const r = await q('select id,username,email,xp,role,created_at from users where id=$1', [req.user.sub]);
+  const r = await q('select id,username,email,xp,role,email_verified,created_at from users where id=$1', [req.user.sub]);
   if (!r.rowCount) return res.status(404).json({ error: 'USER_NOT_FOUND' });
   res.json({ ...r.rows[0], rank: rank(r.rows[0].xp) });
 });
 
 app.get('/api/email/status', requireAuth, async (req,res)=>{ const r=await q('select email_verified,email_verified_at from users where id=$1',[req.user.sub]); res.json(r.rows[0]||{email_verified:false}); });
-app.post('/api/email/resend', requireAuth, async (req,res)=>{ const r=await q('select id,email from users where id=$1',[req.user.sub]); if(!r.rowCount) return res.status(404).json({error:'USER_NOT_FOUND'}); if(!mailer) return res.status(503).json({error:'SMTP_NOT_CONFIGURED'}); const token=crypto.randomBytes(32).toString('base64url'); await q('delete from email_verifications where user_id=$1',[req.user.sub]); await q("insert into email_verifications(user_id,token_hash,expires_at) values($1,$2,now()+interval '24 hours')",[req.user.sub,sha256(token)]); const base=`${req.protocol}://${req.get('host')}`; await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:r.rows[0].email,subject:'OrbitDesk: подтверждение почты',html:`<a href="${base}/api/auth/verify-email?token=${encodeURIComponent(token)}">Подтвердить email</a>`}); res.json({ok:true}); });
+app.post('/api/auth/resend-code', async (req,res)=>{try{
+  const email=String(req.body?.email||'').trim().toLowerCase();
+  if(!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({error:'BAD_EMAIL'});
+  const r=await q('select id,email,email_verified from users where lower(email)=lower($1)',[email]);
+  if(!r.rowCount) return res.status(404).json({error:'USER_NOT_FOUND'});
+  if(r.rows[0].email_verified) return res.json({ok:true,alreadyVerified:true});
+  if(!mailer) return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});
+  const code=String(Math.floor(100000+Math.random()*900000));
+  await q('delete from email_verification_codes where user_id=$1',[r.rows[0].id]);
+  await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[r.rows[0].id,sha256(code)]);
+  await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:email,subject:'OrbitDesk: код подтверждения',text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
+  res.json({ok:true});
+}catch(e){console.error(e);res.status(500).json({error:'RESEND_FAILED'});}});
+
+app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});if(!mailer)return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});const code=String(Math.floor(100000+Math.random()*900000));await q('delete from email_verification_codes where user_id=$1',[req.user.sub]);await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[req.user.sub,sha256(code)]);await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:r.rows[0].email,subject:'OrbitDesk: новый код подтверждения',text:`Код OrbitDesk: ${code}`,html:`<h2>OrbitDesk</h2><p>Новый код:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p>`});res.json({ok:true});});
 
 app.get('/api/settings', requireAuth, async (req, res) => {
   const r = await q('select payload from user_settings where user_id=$1', [req.user.sub]);
@@ -238,6 +287,7 @@ async function googleAuthForUser(userId){ const r=await q(`select token_cipher,r
 app.delete('/api/integrations/:provider', requireAuth, async (req,res)=>{ await q('delete from integrations where user_id=$1 and provider=$2',[req.user.sub,String(req.params.provider)]); await audit(req.user.sub,'integration.disconnected',null,{provider:req.params.provider}); res.json({ok:true}); });
 app.get('/api/google/sheets', requireAuth, async (req,res)=>{ try{ const auth=await googleAuthForUser(req.user.sub); if(!auth) return res.status(404).json({error:'GOOGLE_NOT_CONNECTED'}); const drive=google.drive({version:'v3',auth:auth.client}); const r=await drive.files.list({q:"mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",fields:'files(id,name,modifiedTime,webViewLink)',pageSize:50,orderBy:'modifiedTime desc'}); res.json(r.data.files||[]); }catch(e){console.error(e);res.status(502).json({error:'GOOGLE_SHEETS_FAILED'});} });
 app.get('/api/google/sheets/:id', requireAuth, async (req,res)=>{ try{ const auth=await googleAuthForUser(req.user.sub); if(!auth) return res.status(404).json({error:'GOOGLE_NOT_CONNECTED'}); const sheets=google.sheets({version:'v4',auth:auth.client}); const spreadsheet=await sheets.spreadsheets.get({spreadsheetId:req.params.id}); const first=spreadsheet.data.sheets?.[0]?.properties?.title||'Sheet1'; const range=String(req.query.range||`${first}!A1:Z40`); const values=await sheets.spreadsheets.values.get({spreadsheetId:req.params.id,range}); res.json({spreadsheetId:req.params.id,range,values:values.data.values||[],sheets:(spreadsheet.data.sheets||[]).map(x=>x.properties)}); }catch(e){console.error(e);res.status(502).json({error:'GOOGLE_SHEET_READ_FAILED'});} });
+app.post('/api/google/sheets', requireAuth, async (req,res)=>{try{const auth=await googleAuthForUser(req.user.sub);if(!auth)return res.status(401).json({error:'GOOGLE_NOT_CONNECTED'});const title=String(req.body?.title||'Новая таблица').slice(0,120);const sheets=google.sheets({version:'v4',auth:auth.client});const out=await sheets.spreadsheets.create({requestBody:{properties:{title}}});await audit(req.user.sub,'google.sheet.create',null,{spreadsheetId:out.data.spreadsheetId,title});res.json({id:out.data.spreadsheetId,name:title,url:out.data.spreadsheetUrl});}catch(e){console.error(e);res.status(502).json({error:'GOOGLE_SHEET_CREATE_FAILED'});}});
 app.put('/api/google/sheets/:id', requireAuth, async (req,res)=>{ try{ const auth=await googleAuthForUser(req.user.sub); if(!auth) return res.status(404).json({error:'GOOGLE_NOT_CONNECTED'}); const sheets=google.sheets({version:'v4',auth:auth.client}); const range=String(req.body?.range||'Sheet1!A1'); const values=Array.isArray(req.body?.values)?req.body.values.slice(0,500).map(r=>Array.isArray(r)?r.slice(0,50).map(v=>String(v).slice(0,500)):[]):[]; const out=await sheets.spreadsheets.values.update({spreadsheetId:req.params.id,range,valueInputOption:'USER_ENTERED',requestBody:{values}}); await audit(req.user.sub,'google.sheet.update',null,{spreadsheetId:req.params.id,range}); res.json({updatedCells:out.data.updatedCells||0,range}); }catch(e){console.error(e);res.status(502).json({error:'GOOGLE_SHEET_WRITE_FAILED'});} });
 
 wss.on('connection', async (ws, req) => {

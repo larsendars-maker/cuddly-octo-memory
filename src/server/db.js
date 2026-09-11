@@ -6,8 +6,8 @@ let pool = null;
 let memoryMode = !hasPg;
 
 const mem = {
-  next: { users:1, bookmarks:1, tabs:1, tables:1, friendships:1, messages:1, sessions:1, photos:1, visits:1, audit:1, integrations:1, oauth_states:1, email_verifications:1 },
-  users: [], settings: new Map(), bookmarks: [], tabs: [], tables: [], friendships: [], messages: [], sessions: [], photos: [], visits: [], audit: [], integrations: [], oauth_states: [], email_verifications: []
+  next: { users:1, bookmarks:1, tabs:1, tables:1, friendships:1, messages:1, sessions:1, photos:1, visits:1, audit:1, integrations:1, oauth_states:1, email_verifications:1, email_codes:1 },
+  users: [], settings: new Map(), bookmarks: [], tabs: [], tables: [], friendships: [], messages: [], sessions: [], photos: [], visits: [], audit: [], integrations: [], oauth_states: [], email_verifications: [], email_codes: []
 };
 const now = () => new Date();
 const clone = v => v == null ? v : JSON.parse(JSON.stringify(v));
@@ -31,6 +31,7 @@ export const dbMode = () => memoryMode ? 'memory' : 'postgres';
 export async function initDb() {
   if (!pool) return;
   await pool.query(`
+    create table if not exists schema_migrations (version integer primary key, applied_at timestamptz not null default now());
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
       password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
@@ -49,9 +50,11 @@ create table if not exists visits (id bigserial primary key, user_id integer not
     create table if not exists integrations (id bigserial primary key, user_id integer not null references users(id) on delete cascade, provider varchar(40) not null, token_cipher text, refresh_cipher text, meta jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(user_id, provider));
     create table if not exists oauth_states (id bigserial primary key, user_id integer not null references users(id) on delete cascade, provider varchar(40) not null, state_hash char(64) unique not null, expires_at timestamptz not null, created_at timestamptz not null default now());
     create table if not exists email_verifications (id bigserial primary key, user_id integer not null references users(id) on delete cascade, token_hash char(64) unique not null, expires_at timestamptz not null, created_at timestamptz not null default now());
+    create table if not exists email_verification_codes (id bigserial primary key, user_id integer unique not null references users(id) on delete cascade, code_hash char(64) not null, attempts integer not null default 0, expires_at timestamptz not null, created_at timestamptz not null default now());
   `);
   await pool.query(`alter table users add column if not exists email_verified boolean not null default false`);
   await pool.query(`alter table users add column if not exists email_verified_at timestamptz`);
+  for (const v of [1]) await pool.query('insert into schema_migrations(version) values($1) on conflict(version) do nothing',[v]);
   const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
   await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
   for (const sql of [
@@ -68,7 +71,8 @@ create table if not exists visits (id bigserial primary key, user_id integer not
     `create index if not exists audit_created_idx on audit_logs(created_at desc)`,
     `create index if not exists audit_actor_idx on audit_logs(actor_id, created_at desc)`,
     `create index if not exists oauth_states_idx on oauth_states(state_hash, expires_at)`,
-    `create index if not exists email_verify_idx on email_verifications(token_hash, expires_at)`
+    `create index if not exists email_verify_idx on email_verifications(token_hash, expires_at)`,
+    `create index if not exists email_code_idx on email_verification_codes(user_id, expires_at)`
   ]) await pool.query(sql);
   await pool.query(`alter table users add column if not exists role varchar(20) not null default 'user'`);
   await pool.query(`alter table bookmarks add column if not exists icon varchar(8) not null default '🌐'`);
@@ -91,7 +95,7 @@ function memQ(text, params=[]) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(1)).toLowerCase()); return result(r?[r]:[]);
   }
   if (s.startsWith('insert into users(')) {
-    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
+    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
   }
   if (s.startsWith('select id,username,email,xp,role,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
   if (s.startsWith('select role from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{role:r.role}]:[]); }
@@ -136,6 +140,10 @@ function memQ(text, params=[]) {
   if (s.startsWith('insert into photos(')) { const r={id:uid('photos'),user_id:Number(p(1)),filename:p(2),mime_type:p(3),size_bytes:Number(p(4)),data:Buffer.from(p(5)),created_at:now().toISOString()};mem.photos.push(r);return result([{id:r.id,filename:r.filename,mime_type:r.mime_type,size_bytes:r.size_bytes,created_at:r.created_at}]); }
   if (s.startsWith('delete from photos where id=$1')) { mem.photos=mem.photos.filter(x=>!(x.id===Number(p(1))&&x.user_id===Number(p(2)))); return result([]); }
 
+  if (s.startsWith('delete from email_verification_codes where user_id=$1')) { mem.email_codes=mem.email_codes.filter(x=>x.user_id!==Number(p(1))); return result([]); }
+  if (s.startsWith('insert into email_verification_codes(')) { const r={id:uid('email_codes'),user_id:Number(p(1)),code_hash:p(2),expires_at:new Date(Date.now()+15*60*1000).toISOString(),attempts:0}; mem.email_codes.push(r); return result([clone(r)]); }
+  if (s.startsWith('select user_id,code_hash,attempts from email_verification_codes where user_id=$1')) { const r=mem.email_codes.find(x=>x.user_id===Number(p(1))&&new Date(x.expires_at)>new Date()); return result(r?[clone(r)]:[]); }
+  if (s.startsWith('update email_verification_codes set attempts=attempts+1 where user_id=$1')) { const r=mem.email_codes.find(x=>x.user_id===Number(p(1))); if(r)r.attempts++; return result([]); }
   throw new Error(`MEMORY_DB_UNSUPPORTED: ${text.slice(0,160)}`);
 }
 

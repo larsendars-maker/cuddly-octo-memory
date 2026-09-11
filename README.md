@@ -1,48 +1,40 @@
-# OrbitDesk React Render v10
+# OrbitDesk React Render v11
 
-Full-stack workspace/browser for Render: React + TypeScript + Vite client, Node/Express + WebSocket server, PostgreSQL persistence.
+OrbitDesk is a React + TypeScript + Vite workspace with a Node/Express backend, WebSocket chat and PostgreSQL.
 
-## New in v10
-- `Larsenda` is the default admin username (`ADMIN_USERNAME`). Existing Larsenda accounts are promoted to admin on database initialization.
-- Admin panel has: user management, global visit history, and audit log.
-- Email verification with expiring verification tokens. SMTP is configurable through Render environment variables.
-- Google Sheets OAuth integration: connect Google, list spreadsheets, open a sheet, read values and write changes back to Google Sheets.
-- Google OAuth tokens are encrypted at rest with AES-256-GCM using `PHOTO_ENCRYPTION_KEY`.
-- Personal visit history is recorded whenever a user opens a site tab.
-- Existing profile customization, internal tabs, chat, friends, bookmarks and local tables remain available.
+## Main changes in v11
+- No automatic GДЗ site in quick sites.
+- Quick sites are user-controlled bookmarks.
+- Omnibox suggests popular sites while typing and remembers frequently visited sites.
+- Custom sites can be added directly from the omnibox.
+- Fixed username + editable visual display name.
+- Avatar accepts URL or data:image and is automatically fitted with object-fit: cover.
+- Themes and accent colors, plus optional lightweight particles. Particles are OFF by default and configurable in Settings.
+- Registration is blocked until the 6-digit email code is verified.
+- Google OAuth integration for Google Sheets: sign in, list, create and edit spreadsheets.
+- Local table editor with autosave and a lightweight AI-style formula helper.
 
-## Render Blueprint
-Recommended first deployment:
+## Render
+Use a Render Blueprint if you want render.yaml to create and wire the Postgres database automatically.
 
-- Render -> New -> Blueprint
-- Select the GitHub repository
-- Render reads `render.yaml` and creates `orbitdesk` plus `orbitdesk-db`
-
-The Blueprint wires `DATABASE_URL` from the Postgres connection string and generates `PHOTO_ENCRYPTION_KEY` automatically.
-
-## Required Google OAuth setup
-In Google Cloud Console enable:
-- Google Sheets API
-- Google Drive API
-
-Create a Web OAuth client and set the redirect URI to:
-`https://YOUR-RENDER-DOMAIN/api/integrations/google/callback`
-
-Then add these Render environment variables:
-- GOOGLE_CLIENT_ID
-- GOOGLE_CLIENT_SECRET
-- GOOGLE_REDIRECT_URI
-
-## Email verification
-Set:
+Required production envs for email verification:
 - SMTP_HOST
-- SMTP_PORT (default 587)
-- SMTP_SECURE (false for STARTTLS, true for SMTPS)
+- SMTP_PORT
+- SMTP_SECURE
 - SMTP_USER
 - SMTP_PASS
 - SMTP_FROM
 
-New accounts receive a verification link. `REQUIRE_EMAIL_VERIFICATION=true` blocks login until email is verified.
+Required Google OAuth envs for Sheets:
+- GOOGLE_CLIENT_ID
+- GOOGLE_CLIENT_SECRET
+- GOOGLE_REDIRECT_URI
 
-## Security
-Never commit real secrets to GitHub. Use Render Environment Variables. `.env` is ignored by Git.
+`GOOGLE_REDIRECT_URI` must match the OAuth redirect configured in Google Cloud exactly, for example:
+`https://YOUR-RENDER-DOMAIN/api/integrations/google/callback`
+
+Build command:
+`npm install && npm run build`
+
+Start command:
+`npm start`
