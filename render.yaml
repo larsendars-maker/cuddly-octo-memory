@@ -2,8 +2,7 @@ services:
   - type: web
     name: orbitdesk
     runtime: node
-    plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /health
     envVars:
@@ -14,9 +13,10 @@ services:
           name: orbitdesk-db
           property: connectionString
       - key: PHOTO_ENCRYPTION_KEY
-        generateValue: true
+        sync: false
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
+
 databases:
   - name: orbitdesk-db
     plan: free

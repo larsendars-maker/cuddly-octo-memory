@@ -7,9 +7,9 @@ import multer from 'multer';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer } from 'ws';
-import { initDb, q } from './src/db.js';
-import { hashPassword, verifyPassword, requireAuth, getCookie, setCookie, clearCookie, createSession, destroySession, issueCsrf, validCsrf } from './src/auth.js';
-import { encryptBuffer, decryptBuffer } from './src/crypto.js';
+import { initDb, q } from './src/server/db.js';
+import { hashPassword, verifyPassword, requireAuth, getCookie, setCookie, clearCookie, createSession, destroySession, issueCsrf, validCsrf } from './src/server/auth.js';
+import { encryptBuffer, decryptBuffer } from './src/server/crypto.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,7 +44,7 @@ const securityHeaders = helmet({
 app.use(securityHeaders);
 app.use((req,res,next)=>{ res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'], etag: true, maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, 'dist'), { extensions: ['html'], etag: true, maxAge: '1h' }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 25, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false });
@@ -230,7 +230,7 @@ wss.on('connection', async (ws, req) => {
   try {
     const token = getCookie(req, 'od_session');
     const user = await (async()=>{
-      const { sessionUser } = await import('./src/auth.js');
+      const { sessionUser } = await import('./src/server/auth.js');
       return sessionUser(token);
     })();
     if (!user) return ws.close(1008, 'AUTH');
@@ -254,7 +254,7 @@ wss.on('connection', async (ws, req) => {
 });
 setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.terminate(); continue; } ws.isAlive = false; ws.ping(); } }, 25000);
 
-app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const port = Number(process.env.PORT || 10000);
 if (process.env.NODE_ENV === 'production' && !/^[0-9a-fA-F]{64}$/.test(process.env.PHOTO_ENCRYPTION_KEY || '')) { console.error('PHOTO_ENCRYPTION_KEY must be 32-byte hex secret'); process.exit(1); }

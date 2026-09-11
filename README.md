@@ -1,34 +1,26 @@
-# OrbitDesk Secure v5
+# OrbitDesk 2.0 — React + TypeScript
 
-Security-focused Render build.
+Это новая версия OrbitDesk без ручного монолитного HTML-интерфейса.
 
-## Important
-You cannot make browser-delivered frontend code completely secret: the browser must receive it. For source confidentiality use a private GitHub repository. Security is enforced server-side.
+## Стек
+- React + TypeScript + Vite — frontend
+- Node.js + Express 5 — backend
+- WebSocket — чат
+- PostgreSQL — аккаунты, роли, вкладки, таблицы, друзья, сообщения, фото
+- Helmet/rate-limit/CSRF/session security — защита
 
-## Render (recommended)
-Deploy as a **Blueprint** so `render.yaml` creates and wires Postgres automatically. `DATABASE_URL` is never committed.
+## Render
+Web Service:
+- Build: `npm install && npm run build`
+- Start: `npm start`
+- Health: `/health`
 
-Required secret values:
-- `PHOTO_ENCRYPTION_KEY`: 32-byte (64 hex chars). Render can generate it from the Blueprint.
-- `BOOTSTRAP_ADMIN_EMAIL`: optional admin email for first/known account.
-
-If you keep an existing Web Service instead of Blueprint, create a Render Postgres in the same region and put its **Internal Database URL** into `DATABASE_URL`. Render recommends the internal URL for services in the same region.
-
-## Security included
-- HttpOnly + Secure + SameSite session cookie
-- server-side sessions with hashed session tokens
-- CSRF protection
-- Helmet security headers + CSP
-- rate limits
-- strict input size limits
-- password hashing with bcrypt
-- encrypted photo blobs using AES-256-GCM
-- image magic-byte validation
-- no secrets in GitHub
-- WebSocket origin + session authentication
-- private photo access
-- API no-store/noindex headers
-- automatic expired-session cleanup
+Для автоматического PostgreSQL используй Render Blueprint (`render.yaml`) или вручную задай `DATABASE_URL` на Web Service.
 
 ## GitHub
-Keep the repository private. Never commit `.env`, database URLs, Render tokens, JWT/API keys, or encryption keys. `.env.example` is safe to commit.
+Коммить весь репозиторий целиком. Реальные секреты не коммить: `.env` игнорируется, `.env.example` содержит только имена переменных.
+
+## Локально
+`npm install`
+`npm run dev`
+Для production: `npm run build` затем `npm start`.
