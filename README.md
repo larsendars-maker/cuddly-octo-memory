@@ -1,13 +1,14 @@
-# MOBA Arena Online v1.2
+# Arena Nexus Online v6
 
-Render Web Service + WebSocket multiplayer.
+Render Web Service + WebSocket MOBA prototype.
 
 ## Render
-Runtime: Node
-Build: `npm install`
-Start: `npm start`
-Health: `/health`
+- Runtime: Node
+- Build Command: `npm install`
+- Start Command: `npm start`
+- Health Check: `/health`
 
-## Controls
-PC: WASD/arrows, left click attack, right click move, 1/2/3 skills, B recall, P shop.
-Mobile: joystick + skill/attack buttons.
+The game uses a single Canvas client and an authoritative Node.js WebSocket server for players, minions, towers, HP and combat.
+
+## GitHub
+Upload these files to the repository root: `index.html`, `server.js`, `package.json`, `render.yaml`.

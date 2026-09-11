@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: moba-arena-online
+    name: arena-nexus-online
     runtime: node
     plan: free
     buildCommand: npm install

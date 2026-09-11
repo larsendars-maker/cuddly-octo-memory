@@ -1,6 +1,6 @@
 {
-  "name": "moba-arena-online",
-  "version": "1.2.0",
+  "name": "arena-nexus-online",
+  "version": "2.0.0",
   "private": true,
   "main": "server.js",
   "scripts": {
