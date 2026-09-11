@@ -81,14 +81,7 @@ async function audit(actorId, action, targetId=null, metadata={}){ try{ await q(
 async function ensureFrontendBuild() {
   const distIndex = path.join(__dirname, 'dist', 'index.html');
   if (fs.existsSync(distIndex)) return;
-  console.log('[OrbitDesk] dist/index.html is missing; running npm run build automatically.');
-  try {
-    await execFileAsync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: __dirname, env: process.env, timeout: 120000 });
-    if (!fs.existsSync(distIndex)) throw new Error('Vite build completed but dist/index.html was not created');
-  } catch (e) {
-    console.error('[OrbitDesk] Frontend build failed:', e?.stderr || e?.message || e);
-    throw e;
-  }
+  throw new Error('Frontend build is missing: run npm run build before starting OrbitDesk.');
 }
 const app = express();
 app.disable('x-powered-by');
