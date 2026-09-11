@@ -35,7 +35,7 @@ export async function initDb() {
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
       password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
-      email_verified boolean not null default false, email_verified_at timestamptz, created_at timestamptz not null default now()
+      email_verified boolean not null default false, email_verified_at timestamptz, blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now()
     );
     create table if not exists user_settings (user_id integer primary key references users(id) on delete cascade, payload jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists bookmarks (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, shortcut varchar(40), icon varchar(8) not null default '🌐', category varchar(30) not null default 'custom', position integer not null default 0, created_at timestamptz not null default now());
@@ -54,9 +54,22 @@ create table if not exists visits (id bigserial primary key, user_id integer not
   `);
   await pool.query(`alter table users add column if not exists email_verified boolean not null default false`);
   await pool.query(`alter table users add column if not exists email_verified_at timestamptz`);
+  await pool.query(`alter table users add column if not exists blocked boolean not null default false`);
+  await pool.query(`alter table users add column if not exists block_reason varchar(240)`);
+  await pool.query(`alter table users add column if not exists blocked_at timestamptz`);
   for (const v of [1]) await pool.query('insert into schema_migrations(version) values($1) on conflict(version) do nothing',[v]);
   const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
   await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
+  try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const root = path.dirname(fileURLToPath(import.meta.url));
+    const file = process.env.ADMIN_USERS_FILE || path.join(root, '..', '..', 'admins.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const admins = Array.isArray(data) ? data : data.admins;
+    if (Array.isArray(admins)) for (const name of admins.map(x=>String(x).trim()).filter(Boolean)) await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [name]);
+  } catch {}
   for (const sql of [
     `create index if not exists sessions_user_idx on sessions(user_id)`,
     `create index if not exists sessions_expires_idx on sessions(expires_at)`,
@@ -95,11 +108,15 @@ function memQ(text, params=[]) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(1)).toLowerCase()); return result(r?[r]:[]);
   }
   if (s.startsWith('insert into users(')) {
-    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
+    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,blocked:false,block_reason:null,blocked_at:null,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
   }
-  if (s.startsWith('select id,username,email,xp,role,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
+  if (s.startsWith('select id,username,email,xp,role,email_verified,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
   if (s.startsWith('select role from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{role:r.role}]:[]); }
-  if (s.startsWith('update users set role=$1 where id=$2 returning id,username,email,xp,role')) { const r=mem.users.find(u=>u.id===Number(p(2))); if(!r)return result([]); r.role=p(1); return result([clone(r)]); }
+  if (s.startsWith('update users set role=')) { const r=mem.users.find(u=>u.id===Number(p(2))); if(!r)return result([]); r.role=p(1); return result([clone(r)]); }
+  if (s.startsWith('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc')) return result(mem.users.slice().sort((a,b)=>b.id-a.id).slice(0,500).map(u=>clone(u)));
+  if (s.startsWith('select username from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{username:r.username}]:[]); }
+  if (s.startsWith('update users set blocked=$1,block_reason=$2')) { const r=mem.users.find(u=>u.id===Number(p(3))); if(!r)return result([]); r.blocked=Boolean(p(1));r.block_reason=p(2);r.blocked_at=r.blocked?now().toISOString():null;return result([clone(r)]); }
+  if (s.startsWith('delete from sessions where user_id=$1')) { mem.sessions=mem.sessions.filter(x=>x.user_id!==Number(p(1))); return result([]); }
   if (s.startsWith('select id,username,email,xp,role,created_at from users order by id desc')) { return result(mem.users.slice().sort((a,b)=>b.id-a.id).slice(0,200).map(clone)); }
   if (s.startsWith('select id,username,xp from users where id<>$1 and username ilike $2')) { const needle=String(p(2)).replace(/%/g,'').toLowerCase(); return result(mem.users.filter(u=>u.id!==Number(p(1))&&u.username.toLowerCase().includes(needle)).sort((a,b)=>a.username.localeCompare(b.username)).slice(0,20).map(u=>({id:u.id,username:u.username,xp:u.xp}))); }
   if (s.startsWith('update users set xp=xp+10 where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); if(r)r.xp+=10; return result([]); }
@@ -131,7 +148,7 @@ function memQ(text, params=[]) {
 
   if (s.startsWith('insert into sessions(')) { const expires=new Date(Date.now()+14*86400000).toISOString(); const r={id:uid('sessions'),token_hash:p(1),user_id:Number(p(2)),expires_at:expires,created_at:now().toISOString()};mem.sessions.push(r);return result([]); }
   if (s.startsWith('delete from sessions where token_hash=$1')) { mem.sessions=mem.sessions.filter(x=>x.token_hash!==p(1)); return result([]); }
-  if (s.startsWith('select u.id,u.username,u.email,u.xp,u.role,u.created_at from sessions s join users u on u.id=s.user_id')) { const srow=mem.sessions.find(x=>x.token_hash===p(1)&&new Date(x.expires_at)>new Date()); const u=srow?mem.users.find(x=>x.id===srow.user_id):null; return result(u?[clone(u)]:[]); }
+  if (s.startsWith('select u.id,u.username,u.email,u.xp,u.role,u.created_at,u.blocked,u.block_reason from sessions s join users u on u.id=s.user_id')) { const srow=mem.sessions.find(x=>x.token_hash===p(1)&&new Date(x.expires_at)>new Date()); const u=srow?mem.users.find(x=>x.id===srow.user_id):null; return result(u?[clone(u)]:[]); }
   if (s.startsWith('delete from sessions where expires_at <= now()')) { mem.sessions=mem.sessions.filter(x=>new Date(x.expires_at)>new Date()); return result([]); }
 
   if (s.startsWith('select id,filename,mime_type,size_bytes,created_at from photos where user_id=$1')) return result(mem.photos.filter(x=>x.user_id===Number(p(1))).sort((a,b)=>b.id-a.id).slice(0,50).map(({data,...rest})=>clone(rest)));

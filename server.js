@@ -18,6 +18,15 @@ import { google } from 'googleapis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
+const ADMIN_FILE = process.env.ADMIN_USERS_FILE || path.join(__dirname, 'admins.json');
+function loadAdminUsernames(){
+  try {
+    const raw=JSON.parse(fs.readFileSync(ADMIN_FILE,'utf8'));
+    const list=Array.isArray(raw)?raw:raw.admins;
+    return new Set((Array.isArray(list)?list:[]).map(x=>String(x).trim().toLowerCase()).filter(Boolean));
+  } catch { return new Set(['larsenda']); }
+}
+function isConfiguredAdmin(username){ return loadAdminUsernames().has(String(username||'').trim().toLowerCase()); }
 function sha256(v){ return crypto.createHash('sha256').update(v).digest('hex'); }
 function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(v).toString('base64'); }
 function unb64(v){ return Buffer.from(v, 'base64'); }
@@ -195,6 +204,7 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(502).json({error:'EMAIL_SEND_FAILED'});
     }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
+    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at});
     res.json({pendingVerification:true,email:user.email,username:user.username});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
@@ -205,7 +215,9 @@ app.post('/api/auth/login', async (req, res) => {
     const r = await q('select * from users where lower(username)=lower($1) or lower(email)=lower($1)', [login || '']);
     const user = r.rows[0];
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
-    if (String(process.env.REQUIRE_EMAIL_VERIFICATION || 'true') !== 'false' && user.email_verified === false) return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED' });
+    if (user.blocked) return res.status(403).json({ error: 'ACCOUNT_BLOCKED', reason: user.block_reason || '' });
+    if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
+    if (String(process.env.REQUIRE_EMAIL_VERIFICATION || 'true') !== 'false' && user.email_verified === false) return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email:user.email });
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);
@@ -215,7 +227,7 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
-app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
+app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED',reason:u.block_reason||''});if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
 app.get('/api/auth/verify-email', async (_req,res)=>res.status(410).send('Подтверждение теперь проходит кодом из письма. Вернитесь в OrbitDesk.'));
 
 app.post('/api/auth/logout', requireAuth, async (req, res) => {
@@ -303,12 +315,14 @@ app.post('/api/tables', requireAuth, async (req, res) => { const name = String(r
 app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q('update tables_data set name=$1,payload=$2,updated_at=now() where id=$3 and user_id=$4 returning *', [String(req.body?.name || 'Таблица').slice(0, 120), req.body?.payload || {}, req.params.id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(r.rows[0]); });
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
-async function requireRole(req,res,roles){ const u=await q('select role from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; if(!roles.includes(role)) { res.status(403).json({error:'FORBIDDEN'}); return null; } return role; }
-app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
-app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit 1000'); res.json(r.rows); });
+async function requireRole(req,res,roles){ const u=await q('select role,username from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; const effective=isConfiguredAdmin(u.rows[0]?.username)?'admin':role; if(!roles.includes(effective)) { res.status(403).json({error:'FORBIDDEN'}); return null; } return effective; }
+app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username,u.email from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
+app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username,u.email from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit 1000'); res.json(r.rows); });
 
-app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,created_at from users order by id desc limit 200'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp)}))); });
-app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role', [role,Number(req.params.id)]); if(!r.rowCount) return res.status(404).json({error:'NOT_FOUND'}); await audit(req.user.sub,'admin.role_change',Number(req.params.id),{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp)}); });
+app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)}))); });
+app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const targetId=Number(req.params.id); const tr=await q('select username from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(role!=='admin' && isConfiguredAdmin(tr.rows[0].username)) return res.status(400).json({error:'ADMIN_CONFIGURED_IN_FILE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]); await audit(req.user.sub,'admin.role_change',targetId,{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.get('/api/admin/admins', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; res.json({file:ADMIN_FILE,admins:[...loadAdminUsernames()]}); });
 app.get('/api/users/search', requireAuth, async (req, res) => { const term = String(req.query.q || '').trim(); const r = await q('select id,username,xp from users where id<>$1 and username ilike $2 order by username limit 20', [req.user.sub, `%${term}%`]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
@@ -361,7 +375,7 @@ setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.termin
 app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const port = Number(process.env.PORT || 10000);
-try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); }
+try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); if (mailer) mailer.verify().then(()=>console.log('[OrbitDesk] SMTP connection verified')).catch(e=>console.warn('[OrbitDesk] SMTP verification failed:',e?.message||e)); else console.warn('[OrbitDesk] SMTP is not configured; email registration is disabled.'); }
 catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`OrbitDesk listening on 0.0.0.0:${port}`));

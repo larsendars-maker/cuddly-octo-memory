@@ -63,10 +63,11 @@ export async function destroySession(token) {
 
 export async function sessionUser(token) {
   if (!token) return null;
-  const r = await q(`select u.id,u.username,u.email,u.xp,u.role,u.created_at
+  const r = await q(`select u.id,u.username,u.email,u.xp,u.role,u.created_at,u.blocked,u.block_reason
                      from sessions s join users u on u.id=s.user_id
                      where s.token_hash=$1 and s.expires_at>now()`, [hashToken(token)]);
   if (!r.rowCount) return null;
+  if (r.rows[0].blocked) return null;
   return r.rows[0];
 }
 
