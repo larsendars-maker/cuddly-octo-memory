@@ -1,8 +1,7 @@
 {
   "name": "moba-arena-online",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
-  "description": "MOBA Arena browser game with Render Web Service and WebSocket multiplayer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
