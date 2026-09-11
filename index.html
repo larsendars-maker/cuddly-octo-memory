@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+  <title>MLBB & Dota Mobile Arena</title>
+  <style>
+    * { 
+      box-sizing: border-box; margin: 0; padding: 0; 
+      user-select: none; -webkit-user-select: none; 
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    }
+    body, html { 
+      width: 100vw; height: 100vh; overflow: hidden; background: #020408; 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif; 
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+
+    #mainMenu {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(circle at center, #111b29 0%, #03060a 100%);
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+      color: white; z-index: 100; padding: 15px; overflow-y: auto; pointer-events: auto;
+    }
+    .logo { 
+      font-size: 24px; font-weight: 900; color: #f1c40f; 
+      text-shadow: 0 0 15px rgba(241, 196, 15, 0.5); letter-spacing: 2px; margin-top: 5px; text-transform: uppercase; 
+    }
+    .sub-title { font-size: 11px; color: #8a9ba8; margin-bottom: 12px; }
+
+    .hero-grid { 
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; 
+      width: 100%; max-width: 450px; margin-bottom: 12px; 
+    }
+    .hero-card {
+      background: linear-gradient(145deg, rgba(255,255,255,0.08), rgba(0,0,0,0.4));
+      border: 2px solid #2c3e50; border-radius: 12px; padding: 10px 4px; text-align: center;
+      cursor: pointer; transition: transform 0.1s ease, border-color 0.1s ease; position: relative; touch-action: manipulation;
+    }
+    .hero-card.selected { 
+      border-color: #f1c40f; background: rgba(241, 196, 15, 0.22); 
+      transform: scale(1.04); box-shadow: 0 0 15px rgba(241, 196, 15, 0.4); 
+    }
+    .hero-card .icon { font-size: 30px; margin-bottom: 4px; display: block; pointer-events: none; }
+    .hero-card .name { font-size: 12px; font-weight: bold; color: #fff; pointer-events: none; }
+    .hero-card .role { font-size: 9px; color: #f39c12; pointer-events: none; }
+
+    #heroPreview {
+      width: 100%; max-width: 450px; background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 10px; margin-bottom: 15px; font-size: 11px; color: #dcdde1;
+    }
+    #heroPreview h3 { color: #f1c40f; margin-bottom: 4px; font-size: 13px; }
+    .skill-desc { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .skill-badge { background: #2c3e50; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold; }
+
+    .start-btn {
+      width: 100%; max-width: 300px; padding: 14px 0; font-size: 16px; font-weight: 900;
+      border-radius: 30px; border: none; background: linear-gradient(45deg, #27ae60, #2ecc71);
+      color: white; box-shadow: 0 4px 20px rgba(46, 204, 113, 0.5); cursor: pointer; text-transform: uppercase;
+      letter-spacing: 1px; touch-action: manipulation;
+    }
+
+    #hud { 
+      position: absolute; top: 10px; left: 10px; color: #fff; font-size: 11px; 
+      pointer-events: none; z-index: 10; display: flex; gap: 8px; align-items: center; 
+    }
+    .hud-btn { 
+      pointer-events: auto; background: linear-gradient(45deg, #f39c12, #e67e22); 
+      border: none; padding: 6px 12px; color: #fff; font-weight: bold; 
+      border-radius: 6px; font-size: 11px; box-shadow: 0 2px 8px rgba(0,0,0,0.5); 
+    }
+
+    #scoreBoard { 
+      position: absolute; top: 10px; left: 50%; transform: translateX(-50%); 
+      color: #fff; font-weight: bold; font-size: 14px; background: rgba(0,0,0,0.75); 
+      padding: 4px 16px; border-radius: 20px; z-index: 10; border: 1px solid rgba(255,255,255,0.2); 
+    }
+
+    #minimap { 
+      position: absolute; top: 10px; right: 10px; width: 85px; height: 85px; 
+      background: rgba(0,0,0,0.85); border: 2px solid #555; border-radius: 8px; z-index: 10; 
+    }
+
+    #shopModal {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 90%; max-width: 380px; background: rgba(10,15,25,0.96); border: 2px solid #f39c12;
+      border-radius: 14px; padding: 14px; color: white; display: none; z-index: 50; pointer-events: auto;
+    }
+    .shop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .item-card { background: #1c2833; padding: 8px; border-radius: 8px; text-align: center; font-size: 11px; border: 1px solid #34495e; }
+    .item-card button { background: #27ae60; border: none; color: white; padding: 6px 10px; margin-top: 5px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; }
+
+    .controls { position: absolute; bottom: 15px; right: 15px; display: flex; gap: 10px; z-index: 10; align-items: flex-end; pointer-events: auto; }
+    .btn {
+      position: relative; width: 50px; height: 50px; border-radius: 50%; background: rgba(15, 23, 42, 0.85);
+      border: 2px solid #64748b; color: white; font-size: 20px; display: flex; align-items: center; justify-content: center;
+      touch-action: manipulation; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+    }
+    .btn-attack { width: 72px; height: 72px; font-size: 30px; border-color: #f1c40f; background: rgba(241, 196, 15, 0.25); }
+    .cd-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85);
+      border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; color: #e74c3c;
+    }
+
+    #joystickZone { position: absolute; bottom: 15px; left: 15px; width: 120px; height: 120px; z-index: 10; pointer-events: auto; }
+    #joystickBase { width: 100%; height: 100%; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25); border-radius: 50%; position: relative; }
+    #joystickStick { width: 46px; height: 46px; background: linear-gradient(135deg, #f1c40f, #e67e22); border-radius: 50%; position: absolute; top: 37px; left: 37px; box-shadow: 0 0 10px rgba(241,196,15,0.6); }
+
+    #endModal {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(3, 7, 13, 0.95); display: none; flex-direction: column;
+      align-items: center; justify-content: center; color: white; z-index: 150; pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="mainMenu">
+    <div class="logo">⚔️ MOBA ARENA 3v3</div>
+    <div class="sub-title">Коснитесь героя для выбора и нажмите "В БОЙ"</div>
+
+    <div class="hero-grid" id="heroGrid">
+      <div class="hero-card selected" data-hero="warrior">
+        <span class="icon">⚔️</span>
+        <div class="name">Тигран</div>
+        <div class="role">Воин / Танк</div>
+      </div>
+      <div class="hero-card" data-hero="mage">
+        <span class="icon">🧙‍♂️</span>
+        <div class="name">Игнис</div>
+        <div class="role">Маг / Магия</div>
+      </div>
+      <div class="hero-card" data-hero="assassin">
+        <span class="icon">🗡️</span>
+        <div class="name">Тень</div>
+        <div class="role">Ассасин</div>
+      </div>
+      <div class="hero-card" data-hero="marksman">
+        <span class="icon">🏹</span>
+        <div class="name">Валькирия</div>
+        <div class="role">Стрелок</div>
+      </div>
+      <div class="hero-card" data-hero="support">
+        <span class="icon">✨</span>
+        <div class="name">Аура</div>
+        <div class="role">Поддержка</div>
+      </div>
+      <div class="hero-card" data-hero="berserker">
+        <span class="icon">🪓</span>
+        <div class="name">Варвар</div>
+        <div class="role">Берсерк</div>
+      </div>
+    </div>
+
+    <div id="heroPreview">
+      <h3 id="previewName">Тигран (Воин / Танк)</h3>
+      <div id="previewDesc">Мощный ближний боец. Врывается в толпу врагов и оглушает их.</div>
+      <div class="skill-desc">
+        <span class="skill-badge" id="previewS1">1: Рывок</span>
+        <span class="skill-badge" id="previewS2">2: Топот</span>
+        <span class="skill-badge" id="previewS3">3: Ульт (Стяжка)</span>
+      </div>
+    </div>
+
+    <button class="start-btn" id="startBtn">В БОЙ!</button>
+  </div>
+
+  <div id="scoreBoard"><span style="color:#3498db" id="blueKills">0</span> : <span style="color:#e74c3c" id="redKills">0</span></div>
+
+  <div id="hud">
+    <button class="hud-btn" onclick="toggleShop()">🛒 Закуп (P)</button>
+    <div>💰 <span id="gold">300</span> | 🌟 Ур: <span id="lvl">1</span></div>
+  </div>
+  <canvas id="minimap" width="85" height="85"></canvas>
+
+  <div id="shopModal">
+    <h3>Лавка Предметов</h3>
+    <div class="shop-grid">
+      <div class="item-card"><b>⚔️ Клинок Атаки</b><br>+30 Урон<br><button onclick="buyItem('damage', 250)">250g</button></div>
+      <div class="item-card"><b>🛡️ Броня Танка</b><br>+400 HP<br><button onclick="buyItem('hp', 250)">250g</button></div>
+      <div class="item-card"><b>⚡ Сапоги Скорости</b><br>+1.5 Скорость<br><button onclick="buyItem('speed', 200)">200g</button></div>
+      <div class="item-card"><b>🩸 Вампиризм</b><br>+18% Лечение<br><button onclick="buyItem('vamp', 400)">400g</button></div>
+    </div>
+    <button onclick="toggleShop()" style="margin-top:12px; width:100%; padding:8px; background:#c0392b; border:none; color:white; border-radius:6px; font-weight:bold;">Закрыть</button>
+  </div>
+
+  <div id="joystickZone">
+    <div id="joystickBase"><div id="joystickStick"></div></div>
+  </div>
+
+  <div id="onlineStatus" style="position:fixed;top:10px;left:10px;z-index:50;background:rgba(0,0,0,.65);padding:7px 10px;border-radius:10px;font:600 12px Arial;color:#fff;backdrop-filter:blur(6px)">🟡 Подключение...</div>
+    <canvas id="gameCanvas"></canvas>
+
+  <div class="controls">
+    <div class="btn" id="btnRecall">🔮</div>
+    <div class="btn" id="btnS1"><span id="s1Icon">🔥</span><div class="cd-overlay" id="cd1" style="display:none;"></div></div>
+    <div class="btn" id="btnS2"><span id="s2Icon">⚡</span><div class="cd-overlay" id="cd2" style="display:none;"></div></div>
+    <div class="btn" id="btnS3"><span id="s3Icon">🌟</span><div class="cd-overlay" id="cd3" style="display:none;"></div></div>
+    <div class="btn btn-attack" id="btnAtk">⚔️</div>
+  </div>
+
+  <div id="endModal">
+    <h1 id="endText" style="font-size: 36px; margin-bottom: 20px;">ПОБЕДА!</h1>
+    <button class="start-btn" onclick="location.reload()">В главное меню</button>
+  </div>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const mapCtx = document.getElementById('minimap').getContext('2d');
+
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    window.addEventListener('resize', resize); resize();
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playSound(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      let osc = audioCtx.createOscillator();
+      let gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+
+      if(type === 'attack') {
+        osc.frequency.setValueAtTime(320, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(80, audioCtx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.08);
+      } else if(type === 'skill') {
+        osc.frequency.setValueAtTime(550, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+      } else if(type === 'gold') {
+        osc.frequency.setValueAtTime(900, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(1300, audioCtx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+      } else if(type === 'heal') {
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+      }
+    }
+
+    const HERO_DATA = {
+      warrior: { name: 'Тигран', role: 'Воин / Танк', color: '#e67e22', hp: 700, speed: 3.3, dmg: 28, range: 75, s1: '🏃', s2: '💥', s3: '🛡️', cd: [4, 6, 12], desc: 'Мощный ближний боец. Врывается в толпу врагов и стягивает их.' },
+      mage:    { name: 'Игнис', role: 'Маг / Магия', color: '#9b59b6', hp: 380, speed: 3.0, dmg: 35, range: 200, s1: '🔥', s2: '❄️', s3: '☄️', cd: [3, 7, 14], desc: 'Высокий магаурон по области с заморозкой и метеоритом.' },
+      assassin:{ name: 'Тень', role: 'Ассасин', color: '#2ecc71', hp: 360, speed: 4.3, dmg: 44, range: 65, s1: '⚡', s2: '🗡️', s3: '🌀', cd: [3, 5, 10], desc: 'Мгновенно телепортируется за спину и наносит криты.' },
+      marksman:{ name: 'Валькирия', role: 'Стрелок', color: '#f1c40f', hp: 370, speed: 3.4, dmg: 38, range: 230, s1: '🏹', s2: '💣', s3: '🎯', cd: [3, 6, 11], desc: 'Огромный урон на дистанции и артиллерийский залп.' },
+      support: { name: 'Аура', role: 'Поддержка', color: '#3498db', hp: 450, speed: 3.2, dmg: 22, range: 170, s1: '💚', s2: '🛡️', s3: '✨', cd: [5, 8, 15], desc: 'Лечит союзников и создает защитное силовое поле.' },
+      berserker:{ name: 'Варвар', role: 'Берсерк', color: '#e74c3c', hp: 620, speed: 3.6, dmg: 36, range: 70, s1: '🪓', s2: '🩸', s3: '🔥', cd: [4, 7, 12], desc: 'Бешеный урон и вампиризм в ближнем бою.' }
+    };
+
+    const MAP_SIZE = 2600;
+    let selectedHeroType = 'warrior';
+
+    let player, blueBase, redBase, lordBoss;
+    let units = [], creeps = [], particles = [], floatTexts = [], projectiles = [];
+    let gold = 300, level = 1, exp = 0, blueKills = 0, redKills = 0;
+    let cdTimers = [0, 0, 0], recallTimer = 0;
+    let attackCooldown = 0;
+    const ATTACK_CD = 0.8;
+    let gameStarted = false;
+    let joystickVector = { x: 0, y: 0 };
+    let keysPressed = {};
+    let gameOver = false;
+    let deathHandled = false;
+    let socket = null;
+    let netId = null;
+    let remotePlayers = {};
+    let lastNetSend = 0;
+    let reconnectTimer = null, reconnectAttempt = 0;
+    let creepWaveTimer = null, respawnTimer = null;
+    const playerName = localStorage.getItem('moba_nick') || ('Player_' + Math.floor(1000 + Math.random()*9000));
+    localStorage.setItem('moba_nick', playerName);
+
+    function setOnlineStatus(text, color) {
+      const el = document.getElementById('onlineStatus');
+      if(el){ el.textContent = text; el.style.color = color || '#fff'; }
+    }
+
+    function connectOnline() {
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = location.host || 'localhost:10000';
+      setOnlineStatus('🟡 Подключение...', '#ffd166');
+      try { socket = new WebSocket(proto + '//' + host); } catch(e) { scheduleReconnect(); return; }
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+        setOnlineStatus('🟢 Онлайн: подключено', '#7dff9b');
+        socket.send(JSON.stringify({type:'join', name:playerName, hero:selectedHeroType, color:player?.color || '#3498db'}));
+      };
+      socket.onclose = () => {
+        setOnlineStatus('🟠 Переподключение...', '#ffd166');
+        scheduleReconnect();
+      };
+      socket.onerror = () => setOnlineStatus('🟠 Ошибка сети', '#ffd166');
+      socket.onmessage = (ev) => {
+        let msg; try { msg = JSON.parse(ev.data); } catch(e){ return; }
+        if(msg.type === 'welcome') { netId = msg.id; }
+        if(msg.type === 'state') {
+          remotePlayers = msg.players || {};
+          const count = Number.isFinite(msg.online) ? msg.online : Object.keys(remotePlayers).length;
+          setOnlineStatus('🟢 Онлайн: ' + count, '#7dff9b');
+          Object.keys(remotePlayers).forEach(id => {
+            if(id === netId || !player) return;
+            const rp = remotePlayers[id];
+            let u = units.find(x => x.netId === id);
+            if(!u) {
+              u = {id:'remote_'+id, netId:id, x:rp.x, y:rp.y, radius:22, color:rp.color || '#3498db', hp:rp.hp, maxHp:rp.maxHp, speed:0, dmg:0, range:0, team:rp.team || 'red', remote:true, name:rp.name || 'Player', hero:rp.hero};
+              units.push(u);
+            }
+            u.x += (rp.x-u.x)*0.28; u.y += (rp.y-u.y)*0.28;
+            u.hp=rp.hp; u.maxHp=rp.maxHp; u.color=rp.color||u.color; u.name=rp.name||u.name; u.hero=rp.hero; u.team=rp.team || u.team;
+          });
+          units = units.filter(u => !u.remote || remotePlayers[u.netId]);
+        }
+      };
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer || gameOver) return;
+      const delay = Math.min(10000, 1000 * Math.pow(1.6, reconnectAttempt++));
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connectOnline(); }, delay);
+    }
+
+    function sendOnlineState(now) {
+      if(!socket || socket.readyState !== WebSocket.OPEN || !player || now-lastNetSend < 70) return;
+      lastNetSend = now;
+      socket.send(JSON.stringify({type:'state', x:player.x, y:player.y, hp:player.hp, maxHp:player.maxHp, hero:selectedHeroType, color:player.color, name:playerName}));
+    }
+
+    function selectHero(type, cardEl) {
+      selectedHeroType = type;
+      const cards = document.querySelectorAll('.hero-card');
+      cards.forEach(c => c.classList.remove('selected'));
+      cardEl.classList.add('selected');
+
+      const data = HERO_DATA[type];
+      document.getElementById('previewName').innerText = `${data.name} (${data.role})`;
+      document.getElementById('previewDesc').innerText = data.desc;
+      document.getElementById('previewS1').innerText = `1: ${data.s1}`;
+      document.getElementById('previewS2').innerText = `2: ${data.s2}`;
+      document.getElementById('previewS3').innerText = `3: ${data.s3}`;
+    }
+
+    window.addEventListener('load', () => {
+      const cards = document.querySelectorAll('.hero-card');
+      cards.forEach(card => {
+        let startY = 0;
+        card.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; }, {passive: true});
+        card.addEventListener('touchend', (e) => {
+          let endY = e.changedTouches[0].clientY;
+          if (Math.abs(endY - startY) < 10) {
+            selectHero(card.getAttribute('data-hero'), card);
+          }
+        }, {passive: true});
+        card.addEventListener('click', () => {
+          selectHero(card.getAttribute('data-hero'), card);
+        });
+      });
+
+      const startBtn = document.getElementById('startBtn');
+      startBtn.addEventListener('click', startGame);
+
+      bindBtn('btnRecall', startRecall);
+      bindBtn('btnS1', () => useSkill(1));
+      bindBtn('btnS2', () => useSkill(2));
+      bindBtn('btnS3', () => useSkill(3));
+      bindBtn('btnAtk', useAttack);
+    });
+
+    function bindBtn(id, fn) {
+      const el = document.getElementById(id);
+      let lastPointer = 0;
+      el.addEventListener('pointerup', (e) => {
+        e.preventDefault();
+        lastPointer = Date.now();
+        fn();
+      });
+      el.addEventListener('click', () => {
+        if (Date.now() - lastPointer < 450) return;
+        fn();
+      });
+    }
+
+    function startGame() {
+      if (gameStarted) return;
+      gameStarted = true;
+      document.getElementById('mainMenu').style.display = 'none';
+      connectOnline();
+
+      const h = HERO_DATA[selectedHeroType];
+      document.getElementById('s1Icon').innerText = h.s1;
+      document.getElementById('s2Icon').innerText = h.s2;
+      document.getElementById('s3Icon').innerText = h.s3;
+
+      blueBase = { x: 250, y: MAP_SIZE - 250, radius: 60, hp: 3500, maxHp: 3500, color: '#104e8b', team: 'blue', isThrone: true };
+      redBase  = { x: MAP_SIZE - 250, y: 250, radius: 60, hp: 3500, maxHp: 3500, color: '#8b1a1a', team: 'red', isThrone: true };
+      lordBoss = { id:'lord', x: MAP_SIZE/2, y: MAP_SIZE/2, radius: 38, hp: 2200, maxHp: 2200, color: '#8e44ad', team: 'neutral', isBoss: true, dmg: 45, range: 100 };
+
+      player = {
+        id: 'player', name: playerName, x: 250, y: MAP_SIZE - 250, radius: 22, color: h.color, hp: h.hp, maxHp: h.hp,
+        speed: h.speed, dmg: h.dmg, range: h.range, team: 'blue', type: selectedHeroType, vamp: 0
+      };
+
+      units = [
+        player,
+        { id:'b1', x: 300, y: MAP_SIZE - 200, radius: 22, color: '#3498db', hp: 450, maxHp: 450, speed: 3.1, dmg: 26, range: 80, team: 'blue' },
+        { id:'b2', x: 200, y: MAP_SIZE - 300, radius: 22, color: '#2980b9', hp: 380, maxHp: 380, speed: 3.2, dmg: 32, range: 180, team: 'blue' },
+        { id:'r1', x: MAP_SIZE - 300, y: 200, radius: 22, color: '#e74c3c', hp: 450, maxHp: 450, speed: 3.1, dmg: 26, range: 80, team: 'red' },
+        { id:'r2', x: MAP_SIZE - 200, y: 300, radius: 22, color: '#c0392b', hp: 380, maxHp: 380, speed: 3.0, dmg: 34, range: 180, team: 'red' },
+        { id:'r3', x: MAP_SIZE - 250, y: 250, radius: 22, color: '#d35400', hp: 600, maxHp: 600, speed: 2.9, dmg: 24, range: 75, team: 'red' },
+
+        { x: 600, y: MAP_SIZE - 600, radius: 42, hp: 1600, maxHp: 1600, color: '#2980b9', team: 'blue', isTower: true, range: 240, dmg: 40 },
+        { x: 1100, y: MAP_SIZE - 1100, radius: 42, hp: 1600, maxHp: 1600, color: '#2980b9', team: 'blue', isTower: true, range: 240, dmg: 40 },
+        { x: MAP_SIZE - 600, y: 600, radius: 42, hp: 1600, maxHp: 1600, color: '#c0392b', team: 'red', isTower: true, range: 240, dmg: 40 },
+        { x: MAP_SIZE - 1100, y: 1100, radius: 42, hp: 1600, maxHp: 1600, color: '#c0392b', team: 'red', isTower: true, range: 240, dmg: 40 },
+
+        blueBase, redBase, lordBoss
+      ];
+
+      setupJoystick();
+      setupKeyboard();
+      if (creepWaveTimer) clearInterval(creepWaveTimer);
+      creepWaveTimer = setInterval(spawnCreeps, 10000);
+      spawnCreeps();
+      requestAnimationFrame(gameLoop);
+    }
+    const LANES = {
+      top:  { start:{x:260,y:430}, end:{x:2340,y:430} },
+      mid:  { start:{x:260,y:2340}, end:{x:2340,y:260} },
+      bot:  { start:{x:260,y:2140}, end:{x:2340,y:2140} }
+    };
+
+    function spawnCreeps() {
+      if (gameOver) return;
+      const now = Date.now();
+      Object.entries(LANES).forEach(([lane, path]) => {
+        for (let i = 0; i < 4; i++) {
+          const offset = i * 34;
+          creeps.push({
+            x: path.start.x + (i % 2) * 18,
+            y: path.start.y - offset,
+            lane, progress: 0,
+            radius: 12, hp: 160, maxHp: 160, speed: 1.55, dmg: 16, team: 'blue',
+            name: i === 3 ? 'Blue Mage' : 'Blue Creep', type: i === 3 ? 'ranged' : 'melee', spawnedAt: now
+          });
+          creeps.push({
+            x: path.end.x - (i % 2) * 18,
+            y: path.end.y + offset,
+            lane, progress: 1,
+            radius: 12, hp: 160, maxHp: 160, speed: 1.55, dmg: 16, team: 'red',
+            name: i === 3 ? 'Red Mage' : 'Red Creep', type: i === 3 ? 'ranged' : 'melee', spawnedAt: now
+          });
+        }
+      });
+    }
+
+    function setupJoystick() {
+      const zone = document.getElementById('joystickZone');
+      const stick = document.getElementById('joystickStick');
+      let touchId = null;
+
+      zone.addEventListener('touchstart', e => { touchId = e.changedTouches[0].identifier; }, {passive: false});
+      window.addEventListener('touchmove', e => {
+        for(let t of e.changedTouches) {
+          if(t.identifier === touchId) {
+            let rect = zone.getBoundingClientRect();
+            let dx = t.clientX - (rect.left + rect.width/2);
+            let dy = t.clientY - (rect.top + rect.height/2);
+            let dist = Math.hypot(dx, dy);
+            let maxDist = 40;
+            if(dist > maxDist) { dx = (dx/dist)*maxDist; dy = (dy/dist)*maxDist; }
+            stick.style.transform = `translate(${dx}px, ${dy}px)`;
+            joystickVector = { x: dx/maxDist, y: dy/maxDist };
+            recallTimer = 0;
+          }
+        }
+      }, {passive: false});
+
+      const resetJoy = e => {
+        for(let t of e.changedTouches) {
+          if(t.identifier === touchId) {
+            stick.style.transform = `translate(0px, 0px)`;
+            joystickVector = { x: 0, y: 0 };
+            touchId = null;
+          }
+        }
+      };
+      window.addEventListener('touchend', resetJoy);
+    }
+
+    function setupKeyboard() {
+      window.addEventListener('keydown', e => {
+        keysPressed[e.key.toLowerCase()] = true;
+        if(e.key === '1') useSkill(1);
+        if(e.key === '2') useSkill(2);
+        if(e.key === '3') useSkill(3);
+        if(e.key === ' ' || e.key.toLowerCase() === 'a') useAttack();
+        if(e.key.toLowerCase() === 'b') startRecall();
+        if(e.key.toLowerCase() === 'p') toggleShop();
+      });
+      window.addEventListener('keyup', e => { keysPressed[e.key.toLowerCase()] = false; });
+    }
+
+    function handleKeyboardMovement() {
+      let vx = 0, vy = 0;
+      if(keysPressed['w'] || keysPressed['arrowup']) vy -= 1;
+      if(keysPressed['s'] || keysPressed['arrowdown']) vy += 1;
+      if(keysPressed['a'] || keysPressed['arrowleft']) vx -= 1;
+      if(keysPressed['d'] || keysPressed['arrowright']) vx += 1;
+
+      if(vx !== 0 || vy !== 0) {
+        let len = Math.hypot(vx, vy);
+        joystickVector = { x: vx/len, y: vy/len };
+        recallTimer = 0;
+      } else if(!('ontouchstart' in window)) {
+        joystickVector = { x: 0, y: 0 };
+      }
+    }
+
+    function startRecall() { recallTimer = 180; }
+
+    function addFloatText(x, y, text, color='#fff', isCrit=false) {
+      floatTexts.push({ x, y, text, color, alpha: 1.0, vy: -1.5, isCrit });
+    }
+
+    function useSkill(num) {
+      if (cdTimers[num - 1] > 0 || player.hp <= 0) return;
+      cdTimers[num - 1] = HERO_DATA[player.type].cd[num - 1];
+      recallTimer = 0;
+      playSound('skill');
+
+      let targets = units.filter(u => u.team === 'red' && u.hp > 0);
+      let nearest = targets.sort((a,b) => Math.hypot(a.x-player.x, a.y-player.y) - Math.hypot(b.x-player.x, b.y-player.y))[0];
+
+      if (player.type === 'warrior') {
+        if(num === 1) { player.x += joystickVector.x * 170; player.y += joystickVector.y * 170; createParticle(player.x, player.y, '#e67e22', 45); }
+        if(num === 2 && nearest && Math.hypot(nearest.x-player.x, nearest.y-player.y) < 150) {
+          let dmg = player.dmg * 2.2; nearest.hp -= dmg; addFloatText(nearest.x, nearest.y, `-${Math.round(dmg)}`, '#f39c12'); createParticle(nearest.x, nearest.y, '#f39c12', 70);
+        }
+        if(num === 3) {
+          targets.forEach(t => {
+            if(Math.hypot(t.x-player.x, t.y-player.y) < 250) { t.x = player.x; t.y = player.y; t.hp -= player.dmg * 2.5; addFloatText(t.x, t.y, `-${Math.round(player.dmg*2.5)}`, '#e74c3c', true); }
+          });
+          createParticle(player.x, player.y, '#e67e22', 160);
+        }
+      } else if (player.type === 'mage') {
+        if(num === 1 && nearest) projectiles.push({ x: player.x, y: player.y, tx: nearest.x, ty: nearest.y, dmg: player.dmg * 1.8, color: '#e74c3c' });
+        if(num === 2) { createParticle(player.x, player.y, '#3498db', 150); targets.forEach(t => { if(Math.hypot(t.x-player.x, t.y-player.y)<150) { t.hp -= player.dmg * 2.0; addFloatText(t.x, t.y, `-${Math.round(player.dmg*2.0)}`, '#3498db'); } }); }
+        if(num === 3 && nearest) { createParticle(nearest.x, nearest.y, '#9b59b6', 180); nearest.hp -= player.dmg * 3.5; addFloatText(nearest.x, nearest.y, `-${Math.round(player.dmg*3.5)} МЕТЕОРИТ!`, '#9b59b6', true); }
+      } else if (player.type === 'assassin') {
+        if(num === 1 && nearest) { nearest.hp -= player.dmg * 1.5; addFloatText(nearest.x, nearest.y, `-${Math.round(player.dmg*1.5)}`, '#2ecc71'); }
+        if(num === 2 && nearest) { player.x = nearest.x - 20; player.y = nearest.y; nearest.hp -= player.dmg * 2.0; addFloatText(nearest.x, nearest.y, `КРИТ -${Math.round(player.dmg*2.0)}`, '#e74c3c', true); }
+        if(num === 3) {
+          for(let i=0; i<5; i++) {
+            setTimeout(() => { if(nearest && nearest.hp>0) { nearest.hp -= player.dmg * 1.2; addFloatText(nearest.x, nearest.y, `-${Math.round(player.dmg*1.2)}`, '#2ecc71'); createParticle(nearest.x, nearest.y, '#2ecc71', 30); } }, i*100);
+          }
+        }
+      } else if (player.type === 'support') {
+        if(num === 1) { player.hp = Math.min(player.maxHp, player.hp + 250); addFloatText(player.x, player.y, `+250 HP`, '#2ecc71'); playSound('heal'); createParticle(player.x, player.y, '#2ecc71', 80); }
+        if(num === 2) { targets.forEach(t => { if(Math.hypot(t.x-player.x, t.y-player.y)<160) { t.x += (t.x-player.x)*0.5; t.y += (t.y-player.y)*0.5; } }); createParticle(player.x, player.y, '#3498db', 120); }
+        if(num === 3) { player.hp = player.maxHp; addFloatText(player.x, player.y, `ЩИТ!`, '#f1c40f', true); createParticle(player.x, player.y, '#f1c40f', 150); }
+      }
+    }
+
+    function useAttack() {
+      if (!player || player.hp <= 0 || attackCooldown > 0) return;
+      attackCooldown = ATTACK_CD;
+      recallTimer = 0;
+      let targets = [...units.filter(u => u.team !== 'blue'), ...creeps.filter(c => c.team === 'red')];
+      targets.forEach(t => {
+        if(t.hp > 0 && Math.hypot(t.x - player.x, t.y - player.y) <= player.range) {
+          let isCrit = Math.random() < 0.25;
+          let dmg = isCrit ? player.dmg * 1.8 : player.dmg;
+          t.hp -= dmg;
+          playSound('attack');
+
+          addFloatText(t.x, t.y, `${isCrit ? 'КРИТ ' : ''}-${Math.round(dmg)}`, isCrit ? '#e74c3c' : '#fff', isCrit);
+
+          if(player.vamp > 0) {
+            let heal = dmg * player.vamp;
+            player.hp = Math.min(player.maxHp, player.hp + heal);
+            addFloatText(player.x, player.y, `+${Math.round(heal)}`, '#2ecc71');
+          }
+          createParticle(t.x, t.y, '#fff', 18);
+
+          if(t.hp <= 0) {
+            let reward = t.isBoss ? 300 : (t.isThrone ? 500 : 60);
+            gold += reward; exp += reward;
+            playSound('gold');
+            document.getElementById('gold').innerText = gold;
+
+            if(exp >= level * 100) {
+              level++; exp = 0;
+              player.maxHp += 80; player.hp = player.maxHp; player.dmg += 6;
+              addFloatText(player.x, player.y, `УРОВЕНЬ ПОВЫШЕН!`, '#f1c40f', true);
+              document.getElementById('lvl').innerText = level;
+            }
+
+            if(t.isBoss) { player.dmg += 25; addFloatText(player.x, player.y, `БАФФ ЛОРДА!`, '#8e44ad', true); }
+            if(t.id && t.team === 'red') { blueKills++; document.getElementById('blueKills').innerText = blueKills; }
+          }
+        }
+      });
+    }
+
+    function createParticle(x, y, color, size) { particles.push({ x, y, color, radius: size, alpha: 1.0 }); }
+    function toggleShop() { const s = document.getElementById('shopModal'); s.style.display = s.style.display === 'block' ? 'none' : 'block'; }
+    function buyItem(type, cost) {
+      if(gold < cost) return alert('Недостаточно золота!');
+      gold -= cost; document.getElementById('gold').innerText = gold;
+      if(type === 'damage') player.dmg += 30;
+      if(type === 'hp') { player.maxHp += 400; player.hp += 400; }
+      if(type === 'speed') player.speed += 1.5;
+      if(type === 'vamp') player.vamp += 0.18;
+    }
+
+    function updateCreeps() {
+      creeps.forEach(c => {
+        if (c.hp <= 0) return;
+        const path = LANES[c.lane] || LANES.mid;
+        const forward = c.team === 'blue' ? 1 : -1;
+        const dx = path.end.x - path.start.x;
+        const dy = path.end.y - path.start.y;
+        const len = Math.hypot(dx, dy) || 1;
+        c.x += (dx / len) * c.speed * forward;
+        c.y += (dy / len) * c.speed * forward;
+        if (c.x < 80 || c.x > MAP_SIZE-80 || c.y < 80 || c.y > MAP_SIZE-80) c.hp = 0;
+      });
+      creeps = creeps.filter(c => c.hp > 0);
+    }
+
+    function updateAI() {
+      units.forEach(u => {
+        if(!u.id || u.id === 'player' || u.hp <= 0) return;
+
+        if(u.hp < u.maxHp * 0.25) {
+          let base = u.team === 'blue' ? blueBase : redBase;
+          u.x += (base.x - u.x) * 0.03; u.y += (base.y - u.y) * 0.03;
+          if(Math.hypot(u.x-base.x, u.y-base.y)<100) u.hp = Math.min(u.maxHp, u.hp + 4);
+          return;
+        }
+
+        let enemies = [...units.filter(e => e.team !== u.team && e.hp > 0), ...creeps.filter(c => c.team !== u.team && c.hp > 0)];
+        let target = enemies.sort((a,b) => Math.hypot(a.x-u.x, a.y-u.y) - Math.hypot(b.x-u.x, b.y-u.y))[0];
+
+        if(target) {
+          let d = Math.hypot(target.x - u.x, target.y - u.y);
+          if(d <= u.range) {
+            target.hp -= u.dmg * 0.03;
+            if(target.hp <= 0 && target.team === 'blue' && u.team === 'red') { redKills++; document.getElementById('redKills').innerText = redKills; }
+          } else {
+            u.x += ((target.x - u.x)/d) * u.speed; u.y += ((target.y - u.y)/d) * u.speed;
+          }
+        }
+      });
+    }
+
+    let lastTime = performance.now();
+    function gameLoop(now) {
+      sendOnlineState(now);
+      let dt = (now - lastTime) / 1000; lastTime = now;
+
+      if(!gameOver) {
+        handleKeyboardMovement();
+
+        for(let i=0; i<3; i++) {
+          if(cdTimers[i] > 0) {
+            cdTimers[i] -= dt;
+            document.getElementById(`cd${i+1}`).style.display = 'flex';
+            document.getElementById(`cd${i+1}`).innerText = Math.ceil(cdTimers[i]);
+          } else document.getElementById(`cd${i+1}`).style.display = 'none';
+        }
+        attackCooldown = Math.max(0, attackCooldown - dt);
+        const atkBtn = document.getElementById('btnAtk');
+        let atkCd = document.getElementById('atkCd');
+        if (!atkCd) {
+          atkCd = document.createElement('div'); atkCd.id = 'atkCd'; atkCd.className = 'cd-overlay';
+          atkBtn.appendChild(atkCd);
+        }
+        atkCd.style.display = attackCooldown > 0 ? 'flex' : 'none';
+        if (attackCooldown > 0) atkCd.innerText = attackCooldown.toFixed(1);
+
+        if(recallTimer > 0) {
+          recallTimer--; createParticle(player.x, player.y, '#3498db', 12);
+          if(recallTimer <= 0) { player.x = blueBase.x; player.y = blueBase.y; player.hp = player.maxHp; }
+        }
+
+        if(player.hp > 0) {
+          player.x += joystickVector.x * player.speed;
+          player.y += joystickVector.y * player.speed;
+          player.x = Math.max(50, Math.min(MAP_SIZE - 50, player.x));
+          player.y = Math.max(50, Math.min(MAP_SIZE - 50, player.y));
+
+          if(Math.hypot(player.x - blueBase.x, player.y - blueBase.y) < 160) {
+            player.hp = Math.min(player.maxHp, player.hp + 4);
+          }
+        } else if (!deathHandled) {
+          deathHandled = true;
+          setTimeout(() => { player.hp = player.maxHp; player.x = blueBase.x; player.y = blueBase.y; deathHandled = false; }, 4000);
+        }
+
+        updateCreeps();
+        updateAI();
+
+        if(redBase.hp <= 0) { gameOver = true; document.getElementById('endText').innerText = 'ПОБЕДА!'; document.getElementById('endModal').style.display = 'flex'; }
+        if(blueBase.hp <= 0) { gameOver = true; document.getElementById('endText').innerText = 'ПОРАЖЕНИЕ!'; document.getElementById('endText').style.color = '#e74c3c'; document.getElementById('endModal').style.display = 'flex'; }
+      }
+
+      ctx.fillStyle = '#0a131d'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.translate(canvas.width/2 - player.x, canvas.height/2 - player.y);
+
+      ctx.fillStyle = 'rgba(52, 152, 219, 0.15)'; ctx.beginPath(); ctx.arc(blueBase.x, blueBase.y, 160, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(231, 76, 60, 0.15)'; ctx.beginPath(); ctx.arc(redBase.x, redBase.y, 160, 0, Math.PI*2); ctx.fill();
+
+      // River
+      ctx.fillStyle = '#183d5a';
+      ctx.fillRect(1180, 0, 240, MAP_SIZE);
+
+      ctx.save(); ctx.font='800 22px Arial'; ctx.fillStyle='rgba(255,255,255,.18)'; ctx.fillText('TOP', 420, 390); ctx.fillText('MID', 1280, 1240); ctx.fillText('BOT', 420, 2100); ctx.restore();
+      // Three lanes
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#263746';
+      ctx.lineWidth = 120;
+      [[260,430,2340,430],[260,2340,2340,260],[260,2140,2340,2140]].forEach(([x1,y1,x2,y2]) => {
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      });
+      ctx.strokeStyle = '#3e5363';
+      ctx.lineWidth = 4;
+      [[260,430,2340,430],[260,2340,2340,260],[260,2140,2340,2140]].forEach(([x1,y1,x2,y2]) => {
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      });
+
+      // Forest blocks / trees
+      const treePoints = [];
+      for (let i=0;i<55;i++) {
+        const x = 360 + ((i*173)%1850);
+        const y = 120 + ((i*97)%2160);
+        const nearLane = [Math.abs(y-430), Math.abs(y-2140), Math.abs((y-(2340-(x-260)*0.9)))].some(v => v < 115);
+        if (!nearLane && Math.abs(x-1300)>140) treePoints.push([x,y]);
+      }
+      treePoints.forEach(([x,y])=>{
+        ctx.fillStyle='#102b1d'; ctx.beginPath(); ctx.arc(x,y,18,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#1c6b3a'; ctx.beginPath(); ctx.arc(x,y-9,14,0,Math.PI*2); ctx.fill();
+      });
+
+      [...units, ...creeps].forEach(u => {
+        if(!u || u.hp <= 0) return;
+        ctx.save();
+        ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(u.x, u.y+u.radius*0.62, u.radius*1.05, u.radius*0.45, 0, 0, Math.PI*2); ctx.fill();
+        const grad=ctx.createRadialGradient(u.x-u.radius*0.35,u.y-u.radius*0.45,2,u.x,u.y,u.radius*1.2);
+        grad.addColorStop(0,'#ffffff'); grad.addColorStop(.18,u.color); grad.addColorStop(1,'#111827');
+        ctx.fillStyle=grad; ctx.beginPath(); ctx.ellipse(u.x, u.y, u.radius*0.9, u.radius, 0, 0, Math.PI*2); ctx.fill();
+        ctx.lineWidth=2; ctx.strokeStyle = u.team === 'blue' ? '#60a5fa' : (u.team === 'neutral' ? '#c084fc' : '#fb7185'); ctx.stroke();
+        ctx.fillStyle = '#f1f5f9'; ctx.beginPath(); ctx.arc(u.x, u.y-u.radius*0.35, u.radius*0.38, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(u.x - 25, u.y - u.radius - 18, 50, 6);
+        ctx.fillStyle = u.team === 'blue' ? '#22c55e' : (u.team === 'neutral' ? '#a855f7' : '#ef4444');
+        ctx.fillRect(u.x - 25, u.y - u.radius - 18, 50 * Math.max(0, u.hp / u.maxHp), 6);
+      });
+
+      particles.forEach((pt, i) => {
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.radius, 0, Math.PI*2);
+        ctx.fillStyle = pt.color; ctx.globalAlpha = pt.alpha; ctx.fill();
+        pt.alpha -= 0.04; if(pt.alpha <= 0) particles.splice(i, 1);
+      });
+      ctx.globalAlpha = 1.0;
+
+      floatTexts.forEach((ft, i) => {
+        ctx.font = ft.isCrit ? 'bold 18px Segoe UI' : 'bold 13px Segoe UI';
+        ctx.fillStyle = ft.color; ctx.globalAlpha = ft.alpha;
+        ctx.fillText(ft.text, ft.x - 15, ft.y);
+        ft.y += ft.vy; ft.alpha -= 0.025;
+        if(ft.alpha <= 0) floatTexts.splice(i, 1);
+      });
+      ctx.globalAlpha = 1.0;
+
+      ctx.restore();
+
+      // Nicknames / team labels are rendered every frame, including remote players.
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.font = '700 11px Arial';
+      [...units, ...creeps].forEach(u => {
+        if(!u || u.hp <= 0 || !u.name || (!u.remote && u.id !== 'player')) return;
+        const sy = u.y - u.radius - 20;
+        ctx.fillStyle = 'rgba(0,0,0,.72)';
+        ctx.fillRect(u.x - 46, sy - 10, 92, 16);
+        ctx.fillStyle = u.team === 'red' ? '#ff8a8a' : (u.team === 'neutral' ? '#d8b4fe' : '#bfe3ff');
+        ctx.fillText(u.name, u.x, sy + 2);
+      });
+      ctx.restore();
+
+      mapCtx.fillStyle = '#000'; mapCtx.fillRect(0,0,85,85);
+      let s = 85 / MAP_SIZE;
+      units.forEach(u => {
+        if(u.hp <= 0) return;
+        mapCtx.fillStyle = u.team === 'blue' ? '#3498db' : (u.team === 'neutral' ? '#8e44ad' : '#e74c3c');
+        mapCtx.fillRect(u.x*s, u.y*s, u.isThrone ? 7 : 4, u.isThrone ? 7 : 4);
+      });
+
+      requestAnimationFrame(gameLoop);
+    }
+  </script>
+</body>
+</html>
+
