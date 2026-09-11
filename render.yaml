@@ -3,7 +3,7 @@ services:
     name: orbitdesk
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /health
     envVars:
@@ -12,7 +12,7 @@ services:
       - key: ADMIN_USERNAME
         value: Larsenda
       - key: REQUIRE_EMAIL_VERIFICATION
-        value: "true"
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: orbitdesk-db
@@ -21,11 +21,13 @@ services:
         generateValue: true
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
-      - key: RESEND_API_KEY
+      - key: MAIL_PROVIDER
+        value: apps-script
+      - key: MAIL_BRIDGE_URL
         sync: false
-      - key: RESEND_FROM_EMAIL
+      - key: MAIL_BRIDGE_TOKEN
         sync: false
-      - key: RESEND_FROM_NAME
+      - key: MAIL_FROM_NAME
         value: OrbitDesk
       - key: GOOGLE_CLIENT_ID
         sync: false
@@ -38,3 +40,7 @@ databases:
   - name: orbitdesk-db
     plan: free
     region: virginia
+
+# Maximum registrations from one IP address
+
+MAX_ACCOUNTS_PER_IP=2

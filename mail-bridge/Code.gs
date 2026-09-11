@@ -1,8 +1,8 @@
-const BRIDGE_TOKEN = 'CHANGE_ME_TO_A_LONG_RANDOM_SECRET';
+const BRIDGE_TOKEN = 'OrbitDesk-Mail-2026-9fK2x7-P4mQ8-Z1';
 const DEFAULT_FROM_NAME = 'OrbitDesk';
 
 function doGet() {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'OrbitDesk mail bridge' }))
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, service: 'OrbitDesk mail bridge', version: 'v31' }))
     .setMimeType(ContentService.MimeType.JSON);
 }
 

@@ -557,3 +557,16 @@ button:active{transform:translateY(1px)}
   .history-row .primary{width:100%}
   .admin-row{grid-template-columns:1fr}
 }
+
+/* Google OAuth setup guide */
+.google-guide{margin-top:12px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018));overflow:hidden}
+.google-guide summary{cursor:pointer;display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 16px;font-weight:800;list-style:none}
+.google-guide summary::-webkit-details-marker{display:none}
+.google-guide summary:after{content:'⌄';opacity:.65;transition:transform .2s ease}.google-guide[open] summary:after{transform:rotate(180deg)}
+.google-guide-body{padding:0 16px 16px;display:grid;gap:10px}
+.guide-step{display:grid;grid-template-columns:minmax(170px,230px) 1fr auto;gap:8px 12px;align-items:start;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(15,20,30,.45)}
+.guide-step>b{grid-row:span 2}.guide-step>span{color:var(--muted)}.guide-step code{grid-column:2 / -1;display:block;white-space:pre-wrap;overflow-wrap:anywhere;padding:9px 10px;border-radius:9px;background:#0b1018;border:1px solid var(--line);color:var(--text)}
+.env-list{grid-column:2/-1;display:grid;gap:6px}.env-list code{display:block;padding:8px 10px;border-radius:9px;background:#0b1018;border:1px solid var(--line);overflow-wrap:anywhere}
+.guide-note{padding:10px 12px;border-radius:12px;background:rgba(92,164,255,.09);border:1px solid rgba(92,164,255,.22);color:var(--text)}
+.guide-links{display:flex;flex-wrap:wrap;gap:8px}
+@media (max-width:760px){.guide-step{grid-template-columns:1fr}.guide-step>b{grid-row:auto}.guide-step code,.env-list{grid-column:auto}.google-guide summary{align-items:flex-start}}

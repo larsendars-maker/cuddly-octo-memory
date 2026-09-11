@@ -74,20 +74,34 @@ async function sendViaBridge({to, subject, text, html}){
   if(!bridgeConfigured()){
     const e=new Error('MAIL_BRIDGE_NOT_CONFIGURED'); e.status=503; e.provider='apps-script'; throw e;
   }
-  const response=await fetch(String(process.env.MAIL_BRIDGE_URL).trim(),{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      token:String(process.env.MAIL_BRIDGE_TOKEN),
-      to:String(to), subject:String(subject), text:String(text), html:String(html),
-      fromName:String(process.env.MAIL_FROM_NAME || 'OrbitDesk').slice(0,80)
-    })
-  });
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),15000);
+  let response;
+  try {
+    response=await fetch(String(process.env.MAIL_BRIDGE_URL).trim(),{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({
+        token:String(process.env.MAIL_BRIDGE_TOKEN),
+        to:String(to), subject:String(subject), text:String(text), html:String(html),
+        fromName:String(process.env.MAIL_FROM_NAME || 'OrbitDesk').replace(/[<>\r\n]/g,'').slice(0,80) || 'OrbitDesk'
+      }),
+      redirect:'follow',
+      signal:controller.signal
+    });
+  } catch(err){
+    clearTimeout(timer);
+    const msg=err?.name==='AbortError' ? 'MAIL_BRIDGE_TIMEOUT' : String(err?.message||'MAIL_BRIDGE_NETWORK_ERROR');
+    const e=new Error(msg); e.status=502; e.provider='apps-script'; throw e;
+  }
+  clearTimeout(timer);
   const raw=await response.text();
   let data={}; try{ data=raw?JSON.parse(raw):{}; }catch{}
   if(!response.ok || data?.ok===false){
-    const detail=String(data?.message || data?.error || raw || `MAIL_BRIDGE_HTTP_${response.status}`).slice(0,400);
-    const e=new Error(`MAIL_BRIDGE_${response.status}:${detail}`); e.status=response.status||502; e.provider='apps-script'; throw e;
+    let detail=String(data?.message || data?.error || '').trim();
+    if(!detail && /google|sign in|permission|access|authorized|account/i.test(raw)) detail='Google Apps Script не разрешил публичный доступ к Web App. Разверни как Web app: «Выполнять от имени: я» и «У кого есть доступ: Все», затем обнови URL в Render.';
+    if(!detail) detail=raw.slice(0,400) || `MAIL_BRIDGE_HTTP_${response.status}`;
+    const e=new Error(`MAIL_BRIDGE_${response.status}:${detail.slice(0,400)}`); e.status=response.status||502; e.provider='apps-script'; throw e;
   }
   return data;
 }
@@ -117,8 +131,11 @@ async function sendVerificationEmail(user, reason='verify'){
   await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
 }
 
-function googleConfigured(){ return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI); }
-function googleClient(){ return new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI); }
+function googleRedirectUri(){
+  return process.env.GOOGLE_REDIRECT_URI || `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'cuddly-octo-memory.onrender.com'}/api/integrations/google/callback`;
+}
+function googleConfigured(){ return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET); }
+function googleClient(){ return new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, googleRedirectUri()); }
 async function audit(actorId, action, targetId=null, metadata={}){ try{ await q('insert into audit_logs(actor_id,action,target_id,metadata) values($1,$2,$3,$4)',[actorId,action,targetId,metadata]); }catch(e){ console.warn('[audit]',e.message); } }
 async function ensureFrontendBuild() {
   const distIndex = path.join(__dirname, 'dist', 'index.html');
@@ -126,6 +143,9 @@ async function ensureFrontendBuild() {
   throw new Error('Frontend build is missing: run npm run build before starting OrbitDesk.');
 }
 const app = express();
+app.set('trust proxy', 1);
+const MAX_ACCOUNTS_PER_IP = Math.max(1, Math.min(10, Number(process.env.MAX_ACCOUNTS_PER_IP || 2)));
+function clientIp(req){ const xf=String(req.headers['x-forwarded-for']||'').split(',')[0].trim(); return xf || String(req.ip||req.socket.remoteAddress||'unknown').trim(); }
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 const server = http.createServer(app);
@@ -266,26 +286,22 @@ app.post('/api/auth/register', async (req, res) => {
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username || '')) return res.status(400).json({ error: 'BAD_USERNAME' });
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
-    if (!mailConfigured()) return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
+    const ip = clientIp(req);
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
+    const ipCount = await q('select count(*)::int as count from users where registration_ip=$1', [ip]);
+    if (Number(ipCount.rows[0]?.count || 0) >= MAX_ACCOUNTS_PER_IP) {
+      return res.status(429).json({ error: 'ACCOUNT_LIMIT_REACHED', limit: MAX_ACCOUNTS_PER_IP });
+    }
     const h = await hashPassword(password);
     const adminUsername = (process.env.ADMIN_USERNAME || 'Larsenda').toLowerCase();
     const bootstrapAdmin = (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase()) || String(username).toLowerCase() === adminUsername;
     const role = bootstrapAdmin ? 'admin' : 'user';
-    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified) values($1,$2,$3,50,$4,false) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role]);
+    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,registration_ip) values($1,$2,$3,50,$4,true,$5) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role, ip]);
     const user = r.rows[0];
-    try {
-      await sendVerificationEmail(user,'verify');
-    } catch (mailError) {
-      await q('delete from users where id=$1',[user.id]);
-      if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});
-      console.error('[mail]', mailError);
-      return res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(mailError?.message||'').slice(0,400),provider:mailProvider()});
-    }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
-    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at});
-    res.json({pendingVerification:true,email:user.email,username:user.username});
+    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,verification_required:false});
+    res.json({ok:true, pendingVerification:false, user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,rank:rank(user.xp)}});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -297,17 +313,6 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (user.blocked) return res.status(403).json({ error: 'ACCOUNT_BLOCKED', reason: user.block_reason || '' });
     if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
-    if (String(process.env.REQUIRE_EMAIL_VERIFICATION || 'true') !== 'false' && user.email_verified === false) {
-      try {
-        await sendVerificationEmail({id:user.id,email:user.email}, 'verify');
-      } catch (mailError) {
-        console.error('[mail/login-unverified]', mailError);
-        if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
-        console.error('[mail/login-unverified] provider error:', mailError?.message || mailError);
-        return res.status(502).json({ error:'EMAIL_SEND_FAILED', detail:String(mailError?.message||'').slice(0,400), provider:mailProvider() });
-      }
-      return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email:user.email, codeSent:true });
-    }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);
@@ -440,6 +445,19 @@ app.get('/api/admin/mail/status', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
   res.json(mailStatus());
 });
+app.get('/api/admin/mail/diagnostic', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  const provider=mailProvider();
+  const base={provider,configured:mailConfigured(),bridgeConfigured:bridgeConfigured(),hasBridgeUrl:Boolean(String(process.env.MAIL_BRIDGE_URL||'').trim()),hasBridgeToken:Boolean(String(process.env.MAIL_BRIDGE_TOKEN||'').trim()),from:mailStatus().from};
+  if(provider!=='apps-script' || !bridgeConfigured()) return res.json({...base,reachable:false,detail:'MAIL_BRIDGE_NOT_CONFIGURED'});
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),8000);
+  try{
+    const r=await fetch(String(process.env.MAIL_BRIDGE_URL).trim(),{redirect:'follow',signal:controller.signal});
+    clearTimeout(timer); const raw=await r.text(); let data={}; try{data=raw?JSON.parse(raw):{};}catch{}
+    const detail=data?.ok ? 'Google Apps Script Web App доступен.' : String(data?.error||raw||'Неизвестный ответ').slice(0,300);
+    res.json({...base,reachable:r.ok&&data?.ok===true,httpStatus:r.status,detail});
+  }catch(e){ clearTimeout(timer); res.json({...base,reachable:false,detail:e?.name==='AbortError'?'MAIL_BRIDGE_TIMEOUT':String(e?.message||'MAIL_BRIDGE_NETWORK_ERROR')}); }
+});
 app.post('/api/admin/mail/test', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
   const to=String(req.body?.email||process.env.BOOTSTRAP_ADMIN_EMAIL||'').trim().toLowerCase();
@@ -465,6 +483,7 @@ app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
   res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)});
 });
 app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.post('/api/admin/users/:id/verify-email', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1 returning id,username,email,email_verified', [targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); await q('delete from email_verification_codes where user_id=$1',[targetId]); await audit(req.user.sub,'admin.email_verification.manual',targetId,{email:r.rows[0].email}); res.json({ok:true,...r.rows[0]}); });
 app.post('/api/admin/users/:id/resend-verification', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('select id,username,email,email_verified,blocked from users where id=$1',[targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); const u=r.rows[0]; if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED'}); if(u.email_verified)return res.json({ok:true,alreadyVerified:true}); try { await sendVerificationEmail({id:u.id,email:u.email},'resend'); await audit(req.user.sub,'admin.email_verification.resend',u.id,{email:u.email}); res.json({ok:true,email:u.email}); } catch(e){ console.error('[admin/mail/resend]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED' || e?.message==='MAIL_BRIDGE_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); } });
 app.get('/api/admin/admins', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; res.json({file:ADMIN_FILE,admins:[...loadAdminUsernames()]}); });
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
@@ -474,7 +493,12 @@ app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`se
 app.get('/api/messages/:userId', requireAuth, async (req, res) => { const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });
-app.get('/api/integrations/google/config', requireAuth, async (_req,res)=>res.json({configured:googleConfigured()}));
+app.get('/api/integrations/google/config', requireAuth, async (_req,res)=>res.json({
+  configured:googleConfigured(),
+  redirectUri:googleRedirectUri(),
+  hasClientId:Boolean(process.env.GOOGLE_CLIENT_ID),
+  hasClientSecret:Boolean(process.env.GOOGLE_CLIENT_SECRET)
+}));
 app.get('/api/integrations/google/start', requireAuth, async (req,res)=>{ if(!googleConfigured()) return res.status(503).json({error:'GOOGLE_OAUTH_NOT_CONFIGURED'}); const state=crypto.randomBytes(24).toString('base64url'); await q(`insert into oauth_states(user_id,provider,state_hash,expires_at) values($1,'google',$2,now()+interval '10 minutes')`,[req.user.sub,sha256(state)]); const client=googleClient(); const url=client.generateAuthUrl({access_type:'offline',prompt:'consent',scope:['openid','email','profile','https://www.googleapis.com/auth/drive.readonly','https://www.googleapis.com/auth/spreadsheets'],state}); res.redirect(url); });
 app.get('/api/integrations/google/callback', async (req,res)=>{ try{ if(!googleConfigured()) return res.status(500).send('Google OAuth is not configured'); const state=String(req.query.state||''); const sr=await q(`select user_id from oauth_states where state_hash=$1 and provider='google' and expires_at>now()`,[sha256(state)]); if(!sr.rowCount) return res.status(400).send('Invalid OAuth state'); const client=googleClient(); const {tokens}=await client.getToken(String(req.query.code||'')); const meta={scope:tokens.scope||'',email:null}; const tokenCipher=b64(encryptBuffer(Buffer.from(JSON.stringify(tokens.access_token||'')))); const refreshCipher=tokens.refresh_token?b64(encryptBuffer(Buffer.from(JSON.stringify(tokens.refresh_token)))):null; await q(`insert into integrations(user_id,provider,token_cipher,refresh_cipher,meta) values($1,'google',$2,$3,$4) on conflict(user_id,provider) do update set token_cipher=excluded.token_cipher,refresh_cipher=coalesce(excluded.refresh_cipher,integrations.refresh_cipher),meta=excluded.meta,updated_at=now()`,[sr.rows[0].user_id,tokenCipher,refreshCipher,meta]); await q('delete from oauth_states where state_hash=$1',[sha256(state)]); await audit(sr.rows[0].user_id,'integration.google.connected'); res.redirect('/?integration=google_connected'); }catch(e){ console.error(e); res.status(500).send('Google OAuth error'); }});
 async function googleAuthForUser(userId){ const r=await q(`select token_cipher,refresh_cipher from integrations where user_id=$1 and provider='google'`,[userId]); if(!r.rowCount) return null; const client=googleClient(); let access=JSON.parse(decryptBuffer(unb64(r.rows[0].token_cipher)).toString()); let refresh=r.rows[0].refresh_cipher?JSON.parse(decryptBuffer(unb64(r.rows[0].refresh_cipher)).toString()):null; client.setCredentials({access_token:access||undefined,refresh_token:refresh||undefined}); if(refresh){ try{ const {credentials}=await client.refreshAccessToken(); if(credentials.access_token){ access=credentials.access_token; await q(`update integrations set token_cipher=$1,updated_at=now() where user_id=$2 and provider='google'`,[b64(encryptBuffer(Buffer.from(JSON.stringify(access)))),userId]); client.setCredentials({access_token:access,refresh_token:refresh}); }}catch{} } return {client,access,refresh}; }
