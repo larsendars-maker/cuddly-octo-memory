@@ -158,6 +158,13 @@ app.use(securityHeaders);
 app.use((req,res,next)=>{ res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
 app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'dist'), { extensions: ['html'], etag: true, maxAge: '1h' }));
+app.use((req,res,next)=>{
+  if(req.path.startsWith('/assets/')) return next();
+  if(/\.(?:map|ts|tsx|jsx|env|yaml|yml|md|json|lock|log)$/i.test(req.path) || /(^|\/)\.(?:git|env)/i.test(req.path)){
+    return res.status(404).send('Not found');
+  }
+  next();
+});
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 25, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
 const verificationLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
@@ -356,7 +363,27 @@ app.post('/api/bookmarks', requireAuth, async (req, res) => {
   const r = await q('insert into bookmarks(user_id,title,url,shortcut,icon,category) values($1,$2,$3,$4,$5,$6) returning *', [req.user.sub, String(title).slice(0, 120), url, String(shortcut || '').slice(0, 40), String(icon || '🌐').slice(0, 8), String(category || 'custom').slice(0, 30)]);
   res.json(r.rows[0]);
 });
+app.put('/api/bookmarks/:id', requireAuth, async (req,res)=>{
+  const title=String(req.body?.title||'Сайт').slice(0,120);
+  const icon=String(req.body?.icon||'🌐').slice(0,8);
+  const shortcut=String(req.body?.shortcut||'').slice(0,40);
+  const r=await q('update bookmarks set title=$1,icon=$2,shortcut=$3 where id=$4 and user_id=$5 returning *',[title,icon,shortcut,req.params.id,req.user.sub]);
+  if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'});
+  res.json(r.rows[0]);
+});
+app.put('/api/bookmarks/reorder', requireAuth, async (req,res)=>{
+  const ids=Array.isArray(req.body?.ids)?req.body.ids.map(Number).filter(Number.isFinite).slice(0,50):[];
+  for(let i=0;i<ids.length;i++) await q('update bookmarks set position=$1 where id=$2 and user_id=$3',[i,ids[i],req.user.sub]);
+  res.json({ok:true});
+});
 app.delete('/api/bookmarks/:id', requireAuth, async (req, res) => { await q('delete from bookmarks where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
+
+app.get('/api/users/search', requireAuth, async (req,res)=>{
+  const qv=String(req.query.q||'').trim();
+  if(qv.length<2)return res.json([]);
+  const r=await q('select id,username,xp,role from users where id<>$1 and username ilike $2 order by username limit 20',[req.user.sub,`%${qv}%`]);
+  res.json(r.rows.map(x=>({...x,rank:rank(x.xp)})));
+});
 
 app.get('/api/tabs', requireAuth, async (req, res) => { const r = await q('select * from workspace_tabs where user_id=$1 order by position,id', [req.user.sub]); res.json(r.rows); });
 app.put('/api/tabs', requireAuth, async (req, res) => {
@@ -366,7 +393,16 @@ app.put('/api/tabs', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/history', requireAuth, async (req,res)=>{ const url=String(req.body?.url||''); const title=String(req.body?.title||'').slice(0,200); if(!validUrl(url)) return res.status(400).json({error:'BAD_URL'}); await q('insert into visits(user_id,url,title) values($1,$2,$3)',[req.user.sub,url,title]); await q('delete from visits where user_id=$1 and id not in (select id from visits where user_id=$1 order by visited_at desc limit 500)',[req.user.sub]); res.json({ok:true}); });
+app.post('/api/history', requireAuth, async (req,res)=>{
+  const url=String(req.body?.url||''); const title=String(req.body?.title||'').slice(0,200);
+  if(!validUrl(url)) return res.status(400).json({error:'BAD_URL'});
+  await q('insert into visits(user_id,url,title) values($1,$2,$3)',[req.user.sub,url,title]);
+  await q('delete from visits where user_id=$1 and id not in (select id from visits where user_id=$1 order by visited_at desc limit 500)',[req.user.sub]);
+  await q('update users set xp=xp+5 where id=$1',[req.user.sub]);
+  const ur=await q('select xp,role,username from users where id=$1',[req.user.sub]);
+  const u=ur.rows[0]||{xp:0,role:'user',username:''};
+  res.json({ok:true,xp:u.xp,rank:rank(u.xp)});
+});
 app.get('/api/history', requireAuth, async (req,res)=>{ const r=await q('select id,url,title,visited_at from visits where user_id=$1 order by visited_at desc limit 200',[req.user.sub]); res.json(r.rows); });
 
 // Built-in free helper: deterministic spreadsheet/code assistant. No external API key required.
@@ -420,9 +456,16 @@ app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRo
 
 app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)}))); });
 app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const targetId=Number(req.params.id); const tr=await q('select username from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(role!=='admin' && isConfiguredAdmin(tr.rows[0].username)) return res.status(400).json({error:'ADMIN_CONFIGURED_IN_FILE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]); await audit(req.user.sub,'admin.role_change',targetId,{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  const xp=Math.max(0,Math.min(999999,Math.floor(Number(req.body?.xp)||0)));
+  const r=await q('update users set xp=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[xp,Number(req.params.id)]);
+  if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'});
+  await audit(req.user.sub,'admin.xp_change',Number(req.params.id),{xp});
+  res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)});
+});
 app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
 app.get('/api/admin/admins', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; res.json({file:ADMIN_FILE,admins:[...loadAdminUsernames()]}); });
-app.get('/api/users/search', requireAuth, async (req, res) => { const term = String(req.query.q || '').trim(); const r = await q('select id,username,xp from users where id<>$1 and username ilike $2 order by username limit 20', [req.user.sub, `%${term}%`]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
@@ -430,6 +473,7 @@ app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`se
 app.get('/api/messages/:userId', requireAuth, async (req, res) => { const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });
+app.get('/api/integrations/google/config', requireAuth, async (_req,res)=>res.json({configured:googleConfigured()}));
 app.get('/api/integrations/google/start', requireAuth, async (req,res)=>{ if(!googleConfigured()) return res.status(503).json({error:'GOOGLE_OAUTH_NOT_CONFIGURED'}); const state=crypto.randomBytes(24).toString('base64url'); await q(`insert into oauth_states(user_id,provider,state_hash,expires_at) values($1,'google',$2,now()+interval '10 minutes')`,[req.user.sub,sha256(state)]); const client=googleClient(); const url=client.generateAuthUrl({access_type:'offline',prompt:'consent',scope:['openid','email','profile','https://www.googleapis.com/auth/drive.readonly','https://www.googleapis.com/auth/spreadsheets'],state}); res.redirect(url); });
 app.get('/api/integrations/google/callback', async (req,res)=>{ try{ if(!googleConfigured()) return res.status(500).send('Google OAuth is not configured'); const state=String(req.query.state||''); const sr=await q(`select user_id from oauth_states where state_hash=$1 and provider='google' and expires_at>now()`,[sha256(state)]); if(!sr.rowCount) return res.status(400).send('Invalid OAuth state'); const client=googleClient(); const {tokens}=await client.getToken(String(req.query.code||'')); const meta={scope:tokens.scope||'',email:null}; const tokenCipher=b64(encryptBuffer(Buffer.from(JSON.stringify(tokens.access_token||'')))); const refreshCipher=tokens.refresh_token?b64(encryptBuffer(Buffer.from(JSON.stringify(tokens.refresh_token)))):null; await q(`insert into integrations(user_id,provider,token_cipher,refresh_cipher,meta) values($1,'google',$2,$3,$4) on conflict(user_id,provider) do update set token_cipher=excluded.token_cipher,refresh_cipher=coalesce(excluded.refresh_cipher,integrations.refresh_cipher),meta=excluded.meta,updated_at=now()`,[sr.rows[0].user_id,tokenCipher,refreshCipher,meta]); await q('delete from oauth_states where state_hash=$1',[sha256(state)]); await audit(sr.rows[0].user_id,'integration.google.connected'); res.redirect('/?integration=google_connected'); }catch(e){ console.error(e); res.status(500).send('Google OAuth error'); }});
 async function googleAuthForUser(userId){ const r=await q(`select token_cipher,refresh_cipher from integrations where user_id=$1 and provider='google'`,[userId]); if(!r.rowCount) return null; const client=googleClient(); let access=JSON.parse(decryptBuffer(unb64(r.rows[0].token_cipher)).toString()); let refresh=r.rows[0].refresh_cipher?JSON.parse(decryptBuffer(unb64(r.rows[0].refresh_cipher)).toString()):null; client.setCredentials({access_token:access||undefined,refresh_token:refresh||undefined}); if(refresh){ try{ const {credentials}=await client.refreshAccessToken(); if(credentials.access_token){ access=credentials.access_token; await q(`update integrations set token_cipher=$1,updated_at=now() where user_id=$2 and provider='google'`,[b64(encryptBuffer(Buffer.from(JSON.stringify(access)))),userId]); client.setCredentials({access_token:access,refresh_token:refresh}); }}catch{} } return {client,access,refresh}; }

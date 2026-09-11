@@ -119,13 +119,17 @@ function memQ(text, params=[]) {
   if (s.startsWith('delete from sessions where user_id=$1')) { mem.sessions=mem.sessions.filter(x=>x.user_id!==Number(p(1))); return result([]); }
   if (s.startsWith('select id,username,email,xp,role,created_at from users order by id desc')) { return result(mem.users.slice().sort((a,b)=>b.id-a.id).slice(0,200).map(clone)); }
   if (s.startsWith('select id,username,xp from users where id<>$1 and username ilike $2')) { const needle=String(p(2)).replace(/%/g,'').toLowerCase(); return result(mem.users.filter(u=>u.id!==Number(p(1))&&u.username.toLowerCase().includes(needle)).sort((a,b)=>a.username.localeCompare(b.username)).slice(0,20).map(u=>({id:u.id,username:u.username,xp:u.xp}))); }
-  if (s.startsWith('update users set xp=xp+10 where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); if(r)r.xp+=10; return result([]); }
+  if (s.startsWith('update users set xp=xp+5 where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); if(r)r.xp+=5; return result([]); }
+  if (s.startsWith('select xp,role,username from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{xp:r.xp,role:r.role,username:r.username}]:[]); }
+  if (s.startsWith('update users set xp=$1 where id=$2 returning')) { const r=mem.users.find(u=>u.id===Number(p(2))); if(!r)return result([]); r.xp=Number(p(1)); return result([clone(r)]); }
 
   if (s.startsWith('insert into user_settings')) { const id=Number(p(1)); mem.settings.set(id,clone(p(2))); return result([]); }
   if (s.startsWith('select payload from user_settings where user_id=$1')) { const v=mem.settings.get(Number(p(1))); return result(v!==undefined?[{payload:clone(v)}]:[]); }
 
   if (s.startsWith('select * from bookmarks where user_id=$1')) return result(mem.bookmarks.filter(x=>x.user_id===Number(p(1))).sort((a,b)=>a.position-b.position||a.id-b.id).map(clone));
   if (s.startsWith('insert into bookmarks(')) { const r={id:uid('bookmarks'),user_id:Number(p(1)),title:p(2),url:p(3),shortcut:p(4),icon:p(5),category:p(6),position:mem.bookmarks.length,created_at:now().toISOString()}; mem.bookmarks.push(r); return result([clone(r)]); }
+  if (s.startsWith('update bookmarks set title=$1,icon=$2,shortcut=$3')) { const r=mem.bookmarks.find(x=>x.id===Number(p(4))&&x.user_id===Number(p(5))); if(!r)return result([]); r.title=p(1);r.icon=p(2);r.shortcut=p(3);return result([clone(r)]); }
+  if (s.startsWith('update bookmarks set position=$1 where id=$2 and user_id=$3')) { const r=mem.bookmarks.find(x=>x.id===Number(p(2))&&x.user_id===Number(p(3))); if(r)r.position=Number(p(1)); return result([]); }
   if (s.startsWith('delete from bookmarks where id=$1')) { mem.bookmarks=mem.bookmarks.filter(x=>!(x.id===Number(p(1))&&x.user_id===Number(p(2)))); return result([]); }
 
   if (s.startsWith('select * from workspace_tabs where user_id=$1')) return result(mem.tabs.filter(x=>x.user_id===Number(p(1))).sort((a,b)=>a.position-b.position||a.id-b.id).map(clone));
