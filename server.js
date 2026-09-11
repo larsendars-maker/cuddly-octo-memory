@@ -6,6 +6,8 @@ const HOST='0.0.0.0';
 const PORT=Number(process.env.PORT||10000);
 const MAP=4000, TICK=50, MAX_PLAYERS=40;
 const players=new Map(), minions=new Map(), towers=new Map(), camps=new Map();
+const bosses=new Map([['overlord',{id:'overlord',name:'OVERLORD',x:2050,y:980,kind:'boss',hp:9000,maxHp:9000,armor:24,damage:120,range:360,last:0,respawnAt:0,alive:true,reward:500,xp:900}],['titan',{id:'titan',name:'TITAN',x:1950,y:3020,kind:'boss',hp:10000,maxHp:10000,armor:28,damage:135,range:380,last:0,respawnAt:0,alive:true,reward:650,xp:1050}]]);
+const BUILDINGS=[{id:'shop-blue',kind:'shop',team:'blue',x:560,y:3360},{id:'shop-red',kind:'shop',team:'red',x:3440,y:640},{id:'fountain-blue',kind:'fountain',team:'blue',x:300,y:3700},{id:'fountain-red',kind:'fountain',team:'red',x:3700,y:300},{id:'outpost-nw',kind:'outpost',team:'neutral',x:2050,y:650},{id:'outpost-se',kind:'outpost',team:'neutral',x:1950,y:3350}];
 let nextPlayer=1,nextMinion=1,nextCamp=1,lastWave=0,waveNumber=0;
 const HEROES={
  guardian:{role:'Tank',hp:960,mana:330,speed:225,damage:62,range:250,attackCd:.78,armor:28,skills:[45,70,100,185]},
@@ -46,15 +48,17 @@ function enemyUnitInRange(src,range){let best=null,bd=range;
  for(const m of minions.values()){if(m.team===src.team||m.hp<=0)continue;const d=dist(src,m);if(d<bd){bd=d;best=m}}
  for(const t of towers.values()){if(t.team===src.team||t.hp<=0)continue;const d=dist(src,t);if(d<bd){bd=d;best=t}}
  if(players.has(src.id)){for(const c of camps.values()){if(!c.alive)continue;const d=dist(src,c);if(d<bd){bd=d;best=c}}}
+ for(const b of bosses.values()){if(!b.alive)continue;const d=dist(src,b);if(d<bd){bd=d;best=b}}
  return best}
 function laneEnemyForMinion(m){let best=null,bd=175;
  for(const p of players.values()){if(p.team===m.team||p.dead)continue;if(nearLane(m)>90)continue;const d=dist(m,p);if(d<bd){bd=d;best=p}}
  for(const q of minions.values()){if(q.team===m.team||q.hp<=0||q.lane!==m.lane)continue;const d=dist(m,q);if(d<bd){bd=d;best=q}}
  for(const t of towers.values()){if(t.team===m.team||t.hp<=0||t.lane!==m.lane)continue;const d=dist(m,t);if(d<bd){bd=d;best=t}}
  return best}
-function rewardKill(source,target){if(!source||!source.id||!players.has(source.id)||source.dead)return;source.gold+=target.kind==='camp'?target.gold||0:(target.type==='siege'?65:target.type==='ranged'?45:35);source.xp+=target.kind==='camp'?target.xp||0:(target.type==='siege'?85:target.type==='ranged'?55:40);while(source.xp>=source.level*160){source.xp-=source.level*160;source.level=Math.min(30,source.level+1);source.skillPoints=(source.skillPoints||0)+1;source.hp=Math.min(source.maxHp+35,source.hp+35);source.maxHp+=35;source.maxMana+=16;source.mana=Math.min(source.maxMana,source.mana+16)}}
-function damage(target,amount,source){if(!target)return false;if(target.kind==='rune')return false;if(target.kind==='camp'&&!target.alive)return false;if(target.hp<=0)return false;if(target.invulnUntil&&Date.now()<target.invulnUntil)return false;const armor=target.armor||0;target.hp=Math.max(0,target.hp-amount*100/(100+Math.max(-50,armor)));if(target.hp===0){
+function rewardKill(source,target){if(!source||!source.id||!players.has(source.id)||source.dead)return;source.gold+=target.kind==='camp'||target.kind==='boss'?target.gold||0:(target.type==='siege'?65:target.type==='ranged'?45:35);source.xp+=target.kind==='camp'||target.kind==='boss'?target.xp||0:(target.type==='siege'?85:target.type==='ranged'?55:40);while(source.xp>=source.level*160){source.xp-=source.level*160;source.level=Math.min(30,source.level+1);source.skillPoints=(source.skillPoints||0)+1;source.hp=Math.min(source.maxHp+35,source.hp+35);source.maxHp+=35;source.maxMana+=16;source.mana=Math.min(source.maxMana,source.mana+16)}}
+function damage(target,amount,source){if(!target)return false;if(target.kind==='rune')return false;if(target.kind==='camp'&&!target.alive)return false;if(target.kind==='boss'&&!target.alive)return false;if(target.hp<=0)return false;if(target.invulnUntil&&Date.now()<target.invulnUntil)return false;const armor=target.armor||0;target.hp=Math.max(0,target.hp-amount*100/(100+Math.max(-50,armor)));if(target.hp===0){
  if(target.kind==='camp'){target.alive=false;target.respawnAt=Date.now()+target.respawn*1000;target.hp=target.maxHp;rewardKill(source,target);return true}
+ if(target.kind==='boss'){target.alive=false;target.respawnAt=Date.now()+180000;target.hp=target.maxHp;rewardKill(source,{kind:'boss',gold:target.reward,xp:target.xp});return true}
  if(target.id&&players.has(target.id)){target.dead=true;target.respawnAt=Date.now()+Math.min(10000,7000+target.level*220);target.gold=Math.max(0,target.gold-80);target.inputX=target.inputY=0}
  rewardKill(source,target);return true}return false}
 function spawnWave(){const now=Date.now();if(lastWave&&now-lastWave<30000)return;lastWave=now;waveNumber++;
@@ -69,7 +73,8 @@ function spawnMinion(team,lane,type,t){const id=String(nextMinion++);const p=lan
 function updateMinions(dt){const now=Date.now();for(const m of minions.values()){if(m.hp<=0)continue;const target=laneEnemyForMinion(m);if(target){if(now-m.last>m.cd*1000){m.last=now;damage(target,m.dmg,m)}}else{const step=m.speed*dt/1000/4800;m.t=clamp(m.t+step,0,1.02);const p=lanePoint(m.lane,m.t,m.team==='blue');m.x=p.x;m.y=p.y}}
  for(const [id,m] of minions)if(m.hp<=0||m.t>=1.02)minions.delete(id)}
 function updateTowers(){const now=Date.now();for(const t of towers.values()){if(t.hp<=0)continue;const target=enemyUnitInRange(t,t.range);if(target&&now-t.last>1000){t.last=now;damage(target,112+(t.tier===2?22:0),t)}}}
-function updateCamps(){const now=Date.now();for(const c of camps.values()){if(!c.alive&&now>=c.respawnAt)c.alive=true}}
+function updateBosses(){const now=Date.now();for(const b of bosses.values()){if(!b.alive)continue;let target=null,bd=b.range;for(const p of players.values()){if(p.dead)continue;const d=dist(b,p);if(d<bd){bd=d;target=p}}if(target&&now-b.last>1200){b.last=now;damage(target,b.damage,b)}}}
+function updateCamps(){const now=Date.now();for(const c of camps.values()){if(!c.alive&&now>=c.respawnAt)c.alive=true}for(const b of bosses.values()){if(!b.alive&&now>=b.respawnAt){b.alive=true;b.hp=b.maxHp}}for(const p of players.values()){if(p.dead)continue;for(const b of BUILDINGS){if(b.kind==='fountain'&&b.team===p.team&&Math.hypot(p.x-b.x,p.y-b.y)<220)p.hp=Math.min(p.maxHp,p.hp+28);}}}
 function respawn(p){const s=base(p.team),h=stats(p);p.x=s.x;p.y=s.y;p.dead=false;p.respawnAt=0;p.invulnUntil=Date.now()+2500;p.hp=p.maxHp;p.mana=p.maxMana;p.inputX=p.inputY=0}
 function basic(p){if(p.dead||p.attackCd>0)return;const h=stats(p),t=enemyUnitInRange(p,h.range);if(!t)return;p.attackCd=h.attackCd*1000;damage(t,h.damage+p.level*4+(p.items.damage||0),p)}
 function cast(p,n){const now=Date.now();if(p.dead||n<1||n>4||p.cd[n]>0||p.skill[n]<1)return;const h=stats(p),lv=p.skill[n],cost=[0,55,85,110,170][n]-Math.min(30,lv*4);if(p.mana<cost)return;p.mana-=cost;p.cd[n]=[0,5,8,11,40][n]*1000;
@@ -82,7 +87,8 @@ function publicState(){const ps={};for(const [id,p] of players)ps[id]={id,name:p
  const ms={};for(const [id,m] of minions)ms[id]={id,team:m.team,lane:m.lane,type:m.type,x:m.x,y:m.y,hp:m.hp,maxHp:m.maxHp};
  const ts={};for(const [id,t] of towers)ts[id]={id,team:t.team,lane:t.lane,tier:t.tier,x:t.x,y:t.y,hp:t.hp,maxHp:t.maxHp};
  const cs={};for(const [id,c] of camps)cs[id]={id,x:c.x,y:c.y,kind:c.kind,alive:c.alive,respawnAt:c.respawnAt,hp:c.hp,maxHp:c.maxHp};
- return{type:'state',players:ps,minions:ms,towers:ts,camps:cs,online:players.size,wave:waveNumber,serverTime:Date.now()}}
+ const bs={};for(const [id,b] of bosses)bs[id]={id,name:b.name,x:b.x,y:b.y,kind:b.kind,alive:b.alive,respawnAt:b.respawnAt,hp:b.hp,maxHp:b.maxHp};
+ return{type:'state',players:ps,minions:ms,towers:ts,camps:cs,bosses:bs,buildings:BUILDINGS,online:players.size,wave:waveNumber,serverTime:Date.now()}}
 const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8'};
 const server=http.createServer((req,res)=>{const url=(req.url||'/').split('?')[0];if(url==='/health'){res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});return res.end(JSON.stringify({ok:true,online:players.size,map:MAP,wave:waveNumber}))}let rel;try{rel=decodeURIComponent(url==='/'?'/index.html':url).replace(/^[/\\]+/,'')}catch{return res.writeHead(400).end('bad url')}const root=path.resolve(__dirname),full=path.resolve(root,rel);if(!full.startsWith(root+path.sep)&&full!==root)return res.writeHead(403).end('forbidden');fs.stat(full,(err,st)=>{if(err||!st.isFile())return res.writeHead(404).end('not found');res.writeHead(200,{'content-type':MIME[path.extname(full)]||'application/octet-stream','cache-control':'no-cache'});fs.createReadStream(full).pipe(res)})});
 const wss=new WebSocketServer({server,maxPayload:16384});
@@ -97,6 +103,6 @@ wss.on('connection',ws=>{if(players.size>=MAX_PLAYERS)return ws.close(1013,'serv
 let last=Date.now(),acc=0;const timer=setInterval(()=>{const now=Date.now(),dt=clamp(now-last,1,100);last=now;spawnWave();updateCamps();for(const p of players.values()){
  if(p.dead){if(now>=p.respawnAt)respawn(p);continue}
  const h=stats(p),d=norm(p.inputX,p.inputY),slow=p.slowUntil&&p.slowUntil>now?.55:1,moveSpeed=h.speed+p.items.speed;p.x=clamp(p.x+d.x*moveSpeed*slow*dt/1000,80,MAP-80);p.y=clamp(p.y+d.y*moveSpeed*slow*dt/1000,80,MAP-80);if(Math.abs(p.inputX)+Math.abs(p.inputY)>.02)p.dir=Math.atan2(d.y,d.x);p.attackCd=Math.max(0,p.attackCd-dt);for(const k of [1,2,3,4])p.cd[k]=Math.max(0,p.cd[k]-dt);if(p.attack){p.attack=false;basic(p)}p.mana=Math.min(p.maxMana+p.items.mana,p.mana+9*dt/1000);p.maxMana=h.mana+p.level*16+p.items.mana;p.maxHp=h.hp+p.level*35; if(p.hp<=0&&!p.dead){p.dead=true;p.respawnAt=now+7000+p.level*200}}
- updateMinions(dt);updateTowers();acc+=dt;if(acc>=100){acc=0;const packet=JSON.stringify(publicState());for(const p of players.values())if(p.ws.readyState===WebSocket.OPEN)p.ws.send(packet)}for(const p of players.values()){if(now-p.lastPong>35000)try{p.ws.terminate()}catch{}else if(p.ws.readyState===WebSocket.OPEN)p.ws.ping()}
+ updateMinions(dt);updateTowers();updateBosses();acc+=dt;if(acc>=100){acc=0;const packet=JSON.stringify(publicState());for(const p of players.values())if(p.ws.readyState===WebSocket.OPEN)p.ws.send(packet)}for(const p of players.values()){if(now-p.lastPong>35000)try{p.ws.terminate()}catch{}else if(p.ws.readyState===WebSocket.OPEN)p.ws.ping()}
 },TICK);
-function stop(){clearInterval(timer);for(const p of players.values())try{p.ws.close(1001)}catch{}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),3000)}process.on('SIGTERM',stop);process.on('SIGINT',stop);server.listen(PORT,HOST,()=>console.log(`Arena Nexus v8 listening on ${HOST}:${PORT}`));
+function stop(){clearInterval(timer);for(const p of players.values())try{p.ws.close(1001)}catch{}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),3000)}process.on('SIGTERM',stop);process.on('SIGINT',stop);server.listen(PORT,HOST,()=>console.log(`Arena Nexus v9 listening on ${HOST}:${PORT}`));

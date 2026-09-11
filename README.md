@@ -1,6 +1,6 @@
-# Arena Nexus Online v8
+# Arena Nexus Online v9
 
-Render-ready online MOBA.
+Render-ready Node + WebSocket MOBA.
 
 ## Render
 - Service: Web Service
@@ -9,19 +9,13 @@ Render-ready online MOBA.
 - Start Command: `npm start`
 - Health Check Path: `/health`
 
-## Features
-- 3 MOBA lanes with curved dirt trails instead of wide roads
-- river/water with animated highlights
-- forest zones, trees, camps and rune spots
-- Dota-like wave pacing: melee + ranged every wave, siege on every 3rd wave, upgraded siege on every 6th
-- neutral camps with gold/XP and respawn timers
-- server-side movement, combat, creeps and towers
-- gold, XP, levels and skill points
-- skill leveling with Q/W/E/R
-- shop: Boots, Blade, Armor, Wand
-- desktop click-to-move/click-to-attack + WASD
-- mobile joystick + touch abilities
-- smooth client interpolation and lightweight particle effects
-
-## GitHub
-Put all files in the repository root so `package.json`, `server.js` and `index.html` are at the top level.
+## Main improvements
+- Static pre-rendered map layer for much lower GPU/CPU load.
+- Separate earth/paths/water/forest/bridges visual zones.
+- Clear hero silhouettes and distinct melee/ranged/siege creeps.
+- Smooth interpolation for players and creeps.
+- Bosses: Overlord and Titan, with HP, damage, rewards and respawn.
+- Functional shop/fountain/outpost buildings.
+- Neutral camps and runes.
+- Three lanes and lane-based creep routes.
+- WebSocket server remains authoritative for core combat state.
