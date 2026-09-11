@@ -1,21 +1,21 @@
-# Arena Nexus Online v9
+# Arena Nexus Online v11
 
-Render-ready Node + WebSocket MOBA.
+Server-authoritative MOBA foundation for Render Web Service.
+
+## Features
+- Server authoritative movement/combat state.
+- Client prediction + reconciliation sequence numbers.
+- A* grid navigation for minions around forest blockers.
+- Three lane routes, river, forests, towers, camps, runes, bosses.
+- Hero roles, XP/levels, Q/W/E/R skills, items, gold.
+- Tower target priority: minions before heroes.
+- Boss phases and respawn timers.
+- Per-player fog-of-war snapshots.
+- Online mode over WebSocket and local practice mode.
+- Static SVG asset pipeline under public/assets.
 
 ## Render
-- Service: Web Service
-- Runtime: Node
-- Build Command: `npm install`
-- Start Command: `npm start`
-- Health Check Path: `/health`
-
-## Main improvements
-- Static pre-rendered map layer for much lower GPU/CPU load.
-- Separate earth/paths/water/forest/bridges visual zones.
-- Clear hero silhouettes and distinct melee/ranged/siege creeps.
-- Smooth interpolation for players and creeps.
-- Bosses: Overlord and Titan, with HP, damage, rewards and respawn.
-- Functional shop/fountain/outpost buildings.
-- Neutral camps and runes.
-- Three lanes and lane-based creep routes.
-- WebSocket server remains authoritative for core combat state.
+Runtime: Node
+Build: npm install
+Start: npm start
+Health: /health
