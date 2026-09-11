@@ -6,8 +6,8 @@ let pool = null;
 let memoryMode = !hasPg;
 
 const mem = {
-  next: { users:1, bookmarks:1, tabs:1, tables:1, friendships:1, messages:1, sessions:1, photos:1 },
-  users: [], settings: new Map(), bookmarks: [], tabs: [], tables: [], friendships: [], messages: [], sessions: [], photos: []
+  next: { users:1, bookmarks:1, tabs:1, tables:1, friendships:1, messages:1, sessions:1, photos:1, visits:1, audit:1, integrations:1, oauth_states:1, email_verifications:1 },
+  users: [], settings: new Map(), bookmarks: [], tabs: [], tables: [], friendships: [], messages: [], sessions: [], photos: [], visits: [], audit: [], integrations: [], oauth_states: [], email_verifications: []
 };
 const now = () => new Date();
 const clone = v => v == null ? v : JSON.parse(JSON.stringify(v));
@@ -33,7 +33,8 @@ export async function initDb() {
   await pool.query(`
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
-      password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user', created_at timestamptz not null default now()
+      password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
+      email_verified boolean not null default false, email_verified_at timestamptz, created_at timestamptz not null default now()
     );
     create table if not exists user_settings (user_id integer primary key references users(id) on delete cascade, payload jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists bookmarks (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, shortcut varchar(40), icon varchar(8) not null default '🌐', category varchar(30) not null default 'custom', position integer not null default 0, created_at timestamptz not null default now());
@@ -43,7 +44,16 @@ export async function initDb() {
     create table if not exists messages (id bigserial primary key, sender_id integer not null references users(id) on delete cascade, recipient_id integer not null references users(id) on delete cascade, body varchar(2000) not null, created_at timestamptz not null default now());
     create table if not exists sessions (id bigserial primary key, token_hash char(64) unique not null, user_id integer not null references users(id) on delete cascade, expires_at timestamptz not null, created_at timestamptz not null default now());
     create table if not exists photos (id bigserial primary key, user_id integer not null references users(id) on delete cascade, filename varchar(180) not null, mime_type varchar(80) not null, size_bytes integer not null, data bytea not null, created_at timestamptz not null default now());
+create table if not exists visits (id bigserial primary key, user_id integer not null references users(id) on delete cascade, url text not null, title varchar(200) not null default '', visited_at timestamptz not null default now());
+    create table if not exists audit_logs (id bigserial primary key, actor_id integer references users(id) on delete set null, action varchar(120) not null, target_id integer, metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now());
+    create table if not exists integrations (id bigserial primary key, user_id integer not null references users(id) on delete cascade, provider varchar(40) not null, token_cipher text, refresh_cipher text, meta jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(user_id, provider));
+    create table if not exists oauth_states (id bigserial primary key, user_id integer not null references users(id) on delete cascade, provider varchar(40) not null, state_hash char(64) unique not null, expires_at timestamptz not null, created_at timestamptz not null default now());
+    create table if not exists email_verifications (id bigserial primary key, user_id integer not null references users(id) on delete cascade, token_hash char(64) unique not null, expires_at timestamptz not null, created_at timestamptz not null default now());
   `);
+  await pool.query(`alter table users add column if not exists email_verified boolean not null default false`);
+  await pool.query(`alter table users add column if not exists email_verified_at timestamptz`);
+  const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
+  await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
   for (const sql of [
     `create index if not exists sessions_user_idx on sessions(user_id)`,
     `create index if not exists sessions_expires_idx on sessions(expires_at)`,
@@ -53,7 +63,12 @@ export async function initDb() {
     `create index if not exists friends_addressee_idx on friendships(addressee_id, status)`,
     `create index if not exists friends_requester_idx on friendships(requester_id, status)`,
     `create index if not exists messages_pair_idx on messages(sender_id, recipient_id, id desc)`,
-    `create index if not exists photos_user_idx on photos(user_id, id desc)`
+    `create index if not exists photos_user_idx on photos(user_id, id desc)`,
+    `create index if not exists visits_user_idx on visits(user_id, visited_at desc)`,
+    `create index if not exists audit_created_idx on audit_logs(created_at desc)`,
+    `create index if not exists audit_actor_idx on audit_logs(actor_id, created_at desc)`,
+    `create index if not exists oauth_states_idx on oauth_states(state_hash, expires_at)`,
+    `create index if not exists email_verify_idx on email_verifications(token_hash, expires_at)`
   ]) await pool.query(sql);
   await pool.query(`alter table users add column if not exists role varchar(20) not null default 'user'`);
   await pool.query(`alter table bookmarks add column if not exists icon varchar(8) not null default '🌐'`);
