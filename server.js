@@ -260,6 +260,7 @@ const port = Number(process.env.PORT || 10000);
 if (process.env.NODE_ENV === 'production' && !/^[0-9a-fA-F]{64}$/.test(process.env.PHOTO_ENCRYPTION_KEY || '')) { console.error('PHOTO_ENCRYPTION_KEY must be 32-byte hex secret'); process.exit(1); }
 try {
   await initDb();
+console.log('[OrbitDesk] Database connected and schema ready.');
 } catch (e) {
   console.error('DATABASE_INIT_FAILED');
   console.error('DATABASE_URL:', process.env.DATABASE_URL ? 'present' : 'MISSING');

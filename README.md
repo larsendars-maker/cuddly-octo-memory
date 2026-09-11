@@ -1,26 +1,24 @@
-# OrbitDesk 2.0 — React + TypeScript
+# OrbitDesk React v6 — Render deployment
 
-Это новая версия OrbitDesk без ручного монолитного HTML-интерфейса.
+## Important
+Deploy this repository as a **Render Blueprint**, not as a manually-created Web Service, so `render.yaml` can create and wire the Postgres database.
 
-## Стек
-- React + TypeScript + Vite — frontend
-- Node.js + Express 5 — backend
-- WebSocket — чат
-- PostgreSQL — аккаунты, роли, вкладки, таблицы, друзья, сообщения, фото
-- Helmet/rate-limit/CSRF/session security — защита
+The Blueprint automatically provisions:
+- `orbitdesk` Web Service
+- `orbitdesk-db` Postgres
+- `DATABASE_URL` from the database connection string
+- `PHOTO_ENCRYPTION_KEY` via Render-generated secret
+
+Only `BOOTSTRAP_ADMIN_EMAIL` is entered manually during the first Blueprint sync.
 
 ## Render
-Web Service:
-- Build: `npm install && npm run build`
-- Start: `npm start`
-- Health: `/health`
+1. Push the complete repository to GitHub.
+2. In Render choose **New → Blueprint**.
+3. Select the repository.
+4. Confirm the Blueprint resources.
+5. Enter `BOOTSTRAP_ADMIN_EMAIL` when Render prompts for it.
 
-Для автоматического PostgreSQL используй Render Blueprint (`render.yaml`) или вручную задай `DATABASE_URL` на Web Service.
+Do not put `DATABASE_URL` or `PHOTO_ENCRYPTION_KEY` in GitHub. Render manages them as environment variables.
 
-## GitHub
-Коммить весь репозиторий целиком. Реальные секреты не коммить: `.env` игнорируется, `.env.example` содержит только имена переменных.
-
-## Локально
-`npm install`
-`npm run dev`
-Для production: `npm run build` затем `npm start`.
+## Manual existing Web Service
+If you insist on keeping the old manually-created service, you must manually attach a Postgres database and set `DATABASE_URL` to its **Internal Database URL**. The Blueprint is the recommended path because it wires the service and database automatically.
