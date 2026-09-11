@@ -1,21 +1,18 @@
-# OrbitDesk React Render v8
+# OrbitDesk React Render
 
-## Fix for the current Render deploy
-This version does NOT crash when `DATABASE_URL` or `PHOTO_ENCRYPTION_KEY` is missing.
+Full-stack workspace/browser for Render: React + TypeScript + Vite client, Node/Express + WebSocket server, PostgreSQL persistence.
 
-### Existing Render Web Service
-Set:
-- Build Command: `npm install && npm run build`
-- Start Command: `npm start`
-- Health Check Path: `/health`
+## Main changes in this version
+- No photo section. Profile customization is used instead: display name, avatar URL, bio, theme, accent and workspace appearance.
+- No modal window for normal work. Sites, tables, profile, settings, chat and admin are internal OrbitDesk tabs.
+- Site tabs use a real in-app iframe with navigation/refresh/URL controls. Some third-party sites can still block iframe embedding via their own security policy; this cannot be bypassed by frontend JavaScript.
+- Tables are full internal tabs with editable cells, autosave and last-updated status.
+- User-created tabs remain persisted through the API.
 
-If no PostgreSQL is connected, the app starts with temporary in-memory storage. Data may reset when the instance restarts/redeploys.
+## Render Web Service
+Build Command: `npm install && npm run build`
+Start Command: `npm start`
+Health Check: `/health`
 
-### Persistent production setup
-Create a Render PostgreSQL database separately, then add this Web Service environment variable:
-`DATABASE_URL=<PostgreSQL Internal Database URL>`
-
-Recommended secret:
-`PHOTO_ENCRYPTION_KEY=<64 hex characters>`
-
-`render.yaml` is a Blueprint example, but an already-created Web Service will NOT apply it automatically.
+For persistent data, set `DATABASE_URL` to your Render PostgreSQL internal connection string.
+Do not commit real secrets to GitHub.

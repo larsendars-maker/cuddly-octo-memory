@@ -94,7 +94,10 @@ function normalizeSettings(s = {}) {
     sidebar: Math.max(220, Math.min(360, Number(s.sidebar) || 270)),
     roundness: Math.max(6, Math.min(24, Number(s.roundness) || 14)),
     wallpaper: validUrl(s.wallpaper) ? s.wallpaper : '',
-    showClock: s.showClock !== false
+    showClock: s.showClock !== false,
+    displayName: String(s.displayName || '').slice(0, 40),
+    bio: String(s.bio || '').slice(0, 240),
+    avatarUrl: validUrl(s.avatarUrl) ? s.avatarUrl : ''
   };
 }
 
@@ -202,41 +205,6 @@ app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = aw
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
 app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.get('/api/messages/:userId', requireAuth, async (req, res) => { const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
-
-function detectImage(buffer) {
-  if (!buffer || buffer.length < 12) return null;
-  if (buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return 'image/png';
-  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
-  if (buffer.subarray(0,6).toString('ascii') === 'GIF87a' || buffer.subarray(0,6).toString('ascii') === 'GIF89a') return 'image/gif';
-  if (buffer.subarray(0,4).toString('ascii') === 'RIFF' && buffer.subarray(8,12).toString('ascii') === 'WEBP') return 'image/webp';
-  return null;
-}
-app.get('/api/photos', requireAuth, async (req, res) => { const r = await q('select id,filename,mime_type,size_bytes,created_at from photos where user_id=$1 order by id desc limit 50', [req.user.sub]); res.json(r.rows.map(p => ({ ...p, url: `/api/photos/${p.id}` }))); });
-app.get('/api/photos/:id', requireAuth, async (req, res) => {
-  const r = await q('select mime_type,data from photos where id=$1 and user_id=$2', [Number(req.params.id), req.user.sub]);
-  if (!r.rowCount) return res.sendStatus(404);
-  try {
-    const plain = decryptBuffer(r.rows[0].data);
-    res.setHeader('Content-Type', r.rows[0].mime_type);
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.setHeader('Content-Disposition', 'inline');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; style-src 'none'; script-src 'none'; frame-ancestors 'none'");
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.end(plain);
-  } catch { res.sendStatus(500); }
-});
-app.post('/api/photos', requireAuth, upload.single('photo'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'PHOTO_REQUIRED' });
-  const realMime = detectImage(req.file.buffer);
-  if (!realMime || realMime !== req.file.mimetype) return res.status(415).json({ error: 'UNSUPPORTED_IMAGE' });
-  const count = await q('select count(*)::int as n from photos where user_id=$1', [req.user.sub]);
-  if (count.rows[0].n >= 50) return res.status(400).json({ error: 'PHOTO_LIMIT' });
-  const filename = path.basename(String(req.file.originalname || 'photo')).replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,180) || 'photo';
-  const encrypted = encryptBuffer(req.file.buffer);
-  const r = await q('insert into photos(user_id,filename,mime_type,size_bytes,data) values($1,$2,$3,$4,$5) returning id,filename,mime_type,size_bytes,created_at', [req.user.sub, filename, realMime, req.file.size, encrypted]);
-  res.json({ ...r.rows[0], url: `/api/photos/${r.rows[0].id}` });
-});
-app.delete('/api/photos/:id', requireAuth, async (req, res) => { await q('delete from photos where id=$1 and user_id=$2', [Number(req.params.id), req.user.sub]); res.json({ ok: true }); });
 
 wss.on('connection', async (ws, req) => {
   const origin = req.headers.origin;
