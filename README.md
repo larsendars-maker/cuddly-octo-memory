@@ -1,31 +1,34 @@
-# OrbitDesk v3 — Render Web Service + PostgreSQL
+# OrbitDesk Secure v5
 
-## Что исправлено
-- Сайты ГДЗ / SFPD DB / Evolve RP / VK больше НЕ добавляются автоматически во вкладки.
-- Предустановки показываются только как быстрые кнопки по роли:
-  - user: ГДЗ, VK, YouTube, Google, Lichess
-  - assistant: user + Evolve RP, SFPD DB, CrazyGames
-  - admin: все доступные пресеты
-- Админ может менять роли пользователей: `user`, `assistant`, `admin`.
-- Новый аккаунт получает `admin` только если база пустая или email совпадает с `BOOTSTRAP_ADMIN_EMAIL`; остальные — `user`.
-- Добавлен более понятный вывод ошибки отсутствующей DATABASE_URL.
+Security-focused Render build.
 
-## ВАЖНО: как исправить твой Render DATABASE_URL
-`render.yaml` создаёт PostgreSQL и связывает его с сервисом. Это работает при создании/обновлении через Render Blueprint.
+## Important
+You cannot make browser-delivered frontend code completely secret: the browser must receive it. For source confidentiality use a private GitHub repository. Security is enforced server-side.
 
-Вариант A (рекомендуется):
-1. Render → New → Blueprint.
-2. Выбери GitHub-репозиторий.
-3. Render прочитает `render.yaml`.
-4. Будут созданы `orbitdesk` и `orbitdesk-db`, а `DATABASE_URL` подключится автоматически.
+## Render (recommended)
+Deploy as a **Blueprint** so `render.yaml` creates and wires Postgres automatically. `DATABASE_URL` is never committed.
 
-Вариант B (если оставляешь существующий Web Service):
-1. Создай Render PostgreSQL с базой `orbitdesk`.
-2. Открой Web Service → Environment.
-3. Создай `DATABASE_URL` со значением **Internal Database URL / Internal Connection String** от этой БД.
-4. Сохрани и сделай Manual Deploy.
+Required secret values:
+- `PHOTO_ENCRYPTION_KEY`: 32-byte (64 hex chars). Render can generate it from the Blueprint.
+- `BOOTSTRAP_ADMIN_EMAIL`: optional admin email for first/known account.
 
-`npm start` остаётся Start Command. Build Command: `npm install`.
+If you keep an existing Web Service instead of Blueprint, create a Render Postgres in the same region and put its **Internal Database URL** into `DATABASE_URL`. Render recommends the internal URL for services in the same region.
 
-## Bootstrap admin
-Можно задать переменную `BOOTSTRAP_ADMIN_EMAIL`. Пользователь с этим email получит `admin` при регистрации/инициализации. Если база полностью новая, первый зарегистрированный пользователь также становится admin.
+## Security included
+- HttpOnly + Secure + SameSite session cookie
+- server-side sessions with hashed session tokens
+- CSRF protection
+- Helmet security headers + CSP
+- rate limits
+- strict input size limits
+- password hashing with bcrypt
+- encrypted photo blobs using AES-256-GCM
+- image magic-byte validation
+- no secrets in GitHub
+- WebSocket origin + session authentication
+- private photo access
+- API no-store/noindex headers
+- automatic expired-session cleanup
+
+## GitHub
+Keep the repository private. Never commit `.env`, database URLs, Render tokens, JWT/API keys, or encryption keys. `.env.example` is safe to commit.

@@ -69,6 +69,15 @@ export async function initDb() {
       body varchar(2000) not null,
       created_at timestamptz not null default now()
     );
+    create table if not exists sessions (
+      id bigserial primary key,
+      token_hash char(64) unique not null,
+      user_id integer not null references users(id) on delete cascade,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now()
+    );
+    create index if not exists sessions_user_idx on sessions(user_id);
+    create index if not exists sessions_expires_idx on sessions(expires_at);
     create table if not exists photos (
       id bigserial primary key,
       user_id integer not null references users(id) on delete cascade,
@@ -79,6 +88,13 @@ export async function initDb() {
       created_at timestamptz not null default now()
     );
   `);
+  await pool.query(`create index if not exists bookmarks_user_idx on bookmarks(user_id, position, id)`);
+  await pool.query(`create index if not exists tabs_user_idx on workspace_tabs(user_id, position, id)`);
+  await pool.query(`create index if not exists tables_user_idx on tables_data(user_id, updated_at desc)`);
+  await pool.query(`create index if not exists friends_addressee_idx on friendships(addressee_id, status)`);
+  await pool.query(`create index if not exists friends_requester_idx on friendships(requester_id, status)`);
+  await pool.query(`create index if not exists messages_pair_idx on messages(sender_id, recipient_id, id desc)`);
+  await pool.query(`create index if not exists photos_user_idx on photos(user_id, id desc)`);
   await pool.query(`alter table users add column if not exists role varchar(20) not null default 'user'`);
   await pool.query(`update users set role='user' where role is null or role not in ('admin','assistant','user')`);
   if (process.env.BOOTSTRAP_ADMIN_EMAIL) {
