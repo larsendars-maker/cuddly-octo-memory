@@ -1,21 +1,20 @@
-# Arena Nexus Online v11
+# OrbitDesk
 
-Server-authoritative MOBA foundation for Render Web Service.
-
-## Features
-- Server authoritative movement/combat state.
-- Client prediction + reconciliation sequence numbers.
-- A* grid navigation for minions around forest blockers.
-- Three lane routes, river, forests, towers, camps, runes, bosses.
-- Hero roles, XP/levels, Q/W/E/R skills, items, gold.
-- Tower target priority: minions before heroes.
-- Boss phases and respawn timers.
-- Per-player fog-of-war snapshots.
-- Online mode over WebSocket and local practice mode.
-- Static SVG asset pipeline under public/assets.
+Private browser-style workspace with registration, login, saved sites, tabs, keyboard binds, personal tables, profile/ranks and real-time friend chat.
 
 ## Render
-Runtime: Node
-Build: npm install
-Start: npm start
-Health: /health
+Create a **Web Service** and connect this repo.
+- Runtime: Node
+- Build Command: `npm install`
+- Start Command: `npm start`
+- Health Check: `/health`
+
+Set `DATABASE_URL` to a PostgreSQL connection string and optionally `JWT_SECRET` (Render can generate it automatically).
+
+The app serves its frontend and API from one Web Service, and uses WebSocket for chat. Render Web Services support inbound WebSockets; public clients should connect over `wss://`. See Render's WebSocket documentation.
+
+## Local
+1. Create a PostgreSQL database.
+2. Set `DATABASE_URL` and `JWT_SECRET`.
+3. Run `npm install` then `npm start`.
+4. Open `http://localhost:10000`.
