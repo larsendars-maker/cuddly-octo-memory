@@ -2,13 +2,22 @@ services:
   - type: web
     name: orbitdesk
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
+    autoDeployTrigger: commit
     envVars:
       - key: NODE_ENV
         value: production
       - key: JWT_SECRET
         generateValue: true
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: orbitdesk-db
+          property: connectionString
+
+databases:
+  - name: orbitdesk-db
+    plan: free
+    databaseName: orbitdesk
