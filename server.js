@@ -31,22 +31,30 @@ function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(
 function unb64(v){ return Buffer.from(v, 'base64'); }
 function mailStatus(){
   return {
-    configured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL),
-    provider: 'resend-api',
-    from: process.env.RESEND_FROM_EMAIL || '',
-    name: process.env.RESEND_FROM_NAME || 'OrbitDesk'
+    configured: mailConfigured(),
+    provider: mailProvider(),
+    from: process.env.RESEND_FROM_EMAIL || process.env.MAIL_FROM_EMAIL || 'orbitdesksupport@gmail.com',
+    name: process.env.RESEND_FROM_NAME || process.env.MAIL_FROM_NAME || 'OrbitDesk'
   };
 }
 
 function resendConfigured(){
   return Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
 }
+function bridgeConfigured(){
+  return Boolean(process.env.MAIL_BRIDGE_URL && process.env.MAIL_BRIDGE_TOKEN);
+}
+function mailProvider(){
+  const p=String(process.env.MAIL_PROVIDER||'auto').trim().toLowerCase();
+  if(p==='apps-script' || p==='google-script') return 'apps-script';
+  if(p==='resend') return 'resend';
+  if(bridgeConfigured()) return 'apps-script';
+  if(resendConfigured()) return 'resend';
+  return 'none';
+}
 
 async function sendViaResend({to, subject, text, html}){
-  if(!resendConfigured()){
-    const e=new Error('MAIL_API_NOT_CONFIGURED'); e.status=503; throw e;
-  }
-  const fromName=String(process.env.RESEND_FROM_NAME || 'OrbitDesk').replace(/[<>\r\n]/g,'').trim() || 'OrbitDesk';
+  const fromName=String(process.env.RESEND_FROM_NAME || 'OrbitDesk').replace(/[<>\\r\\n]/g,'').trim() || 'OrbitDesk';
   const fromEmail=String(process.env.RESEND_FROM_EMAIL || '').trim();
   const response=await fetch('https://api.resend.com/emails',{
     method:'POST',
@@ -56,10 +64,44 @@ async function sendViaResend({to, subject, text, html}){
   const raw=await response.text();
   let data={}; try{ data=raw?JSON.parse(raw):{}; }catch{}
   if(!response.ok){
-    const detail=data?.message || data?.name || raw || `RESEND_HTTP_${response.status}`;
-    const e=new Error(detail); e.status=response.status===401||response.status===403?502:502; e.provider='resend'; throw e;
+    const detail=String(data?.message || data?.name || raw || `RESEND_HTTP_${response.status}`).slice(0,400);
+    const e=new Error(`RESEND_${response.status}:${detail}`); e.status=response.status; e.provider='resend'; throw e;
   }
   return data;
+}
+
+async function sendViaBridge({to, subject, text, html}){
+  if(!bridgeConfigured()){
+    const e=new Error('MAIL_BRIDGE_NOT_CONFIGURED'); e.status=503; e.provider='apps-script'; throw e;
+  }
+  const response=await fetch(String(process.env.MAIL_BRIDGE_URL).trim(),{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      token:String(process.env.MAIL_BRIDGE_TOKEN),
+      to:String(to), subject:String(subject), text:String(text), html:String(html),
+      fromName:String(process.env.MAIL_FROM_NAME || 'OrbitDesk').slice(0,80)
+    })
+  });
+  const raw=await response.text();
+  let data={}; try{ data=raw?JSON.parse(raw):{}; }catch{}
+  if(!response.ok || data?.ok===false){
+    const detail=String(data?.message || data?.error || raw || `MAIL_BRIDGE_HTTP_${response.status}`).slice(0,400);
+    const e=new Error(`MAIL_BRIDGE_${response.status}:${detail}`); e.status=response.status||502; e.provider='apps-script'; throw e;
+  }
+  return data;
+}
+
+function mailConfigured(){
+  const p=mailProvider();
+  return p==='apps-script' ? bridgeConfigured() : p==='resend' ? resendConfigured() : false;
+}
+
+async function sendViaMail(payload){
+  const p=mailProvider();
+  if(p==='apps-script') return sendViaBridge(payload);
+  if(p==='resend') return sendViaResend(payload);
+  const e=new Error('MAIL_API_NOT_CONFIGURED'); e.status=503; throw e;
 }
 
 async function sendVerificationEmail(user, reason='verify'){
@@ -70,7 +112,7 @@ async function sendVerificationEmail(user, reason='verify'){
 
   // Never persist an un-sendable verification code. The code is written only
   // after the provider has accepted the message.
-  await sendViaResend({to:user.email,subject,text,html});
+  await sendViaMail({to:user.email,subject,text,html});
   await q('delete from email_verification_codes where user_id=$1',[user.id]);
   await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
 }
@@ -217,7 +259,7 @@ app.post('/api/auth/register', async (req, res) => {
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username || '')) return res.status(400).json({ error: 'BAD_USERNAME' });
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
-    if (!resendConfigured()) return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
+    if (!mailConfigured()) return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
     const h = await hashPassword(password);
@@ -232,7 +274,7 @@ app.post('/api/auth/register', async (req, res) => {
       await q('delete from users where id=$1',[user.id]);
       if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});
       console.error('[mail]', mailError);
-      return res.status(502).json({error:'EMAIL_SEND_FAILED'});
+      return res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(mailError?.message||'').slice(0,400),provider:mailProvider()});
     }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
     await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at});
@@ -255,7 +297,7 @@ app.post('/api/auth/login', async (req, res) => {
         console.error('[mail/login-unverified]', mailError);
         if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
         console.error('[mail/login-unverified] provider error:', mailError?.message || mailError);
-        return res.status(502).json({ error:'EMAIL_SEND_FAILED' });
+        return res.status(502).json({ error:'EMAIL_SEND_FAILED', detail:String(mailError?.message||'').slice(0,400), provider:mailProvider() });
       }
       return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email:user.email, codeSent:true });
     }
@@ -292,7 +334,7 @@ app.post('/api/auth/resend-code', async (req,res)=>{try{
   if(r.rows[0].email_verified) return res.json({ok:true,alreadyVerified:true});
   await sendVerificationEmail({id:r.rows[0].id,email},'resend');
   res.json({ok:true});
-}catch(e){console.error('[mail/resend]',e);if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});res.status(502).json({error:'EMAIL_SEND_FAILED'});}});
+}catch(e){console.error('[mail/resend]',e);if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()});}});
 
 app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});await sendVerificationEmail({id:r.rows[0].id,email:r.rows[0].email},'resend');res.json({ok:true});});
 
@@ -367,10 +409,10 @@ app.post('/api/admin/mail/test', requireAuth, async (req,res)=>{
   const to=String(req.body?.email||process.env.BOOTSTRAP_ADMIN_EMAIL||'').trim().toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({error:'BAD_EMAIL'});
   try{
-    await sendViaResend({to,subject:'OrbitDesk: тест почты',text:'Почта OrbitDesk работает. Тестовое сообщение.',html:'<p><b>OrbitDesk</b>: почта работает. Это тестовое сообщение.</p>'});
-  }catch(e){ console.error('[mail/test]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); return res.status(502).json({error:'EMAIL_SEND_FAILED'}); }
-  await audit(req.user.sub,'mail.test',null,{to,provider:'resend'});
-  res.json({ok:true,to,provider:'resend'});
+    await sendViaMail({to,subject:'OrbitDesk: тест почты',text:'Почта OrbitDesk работает. Тестовое сообщение.',html:'<p><b>OrbitDesk</b>: почта работает. Это тестовое сообщение.</p>'});
+  }catch(e){ console.error('[mail/test]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); return res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); }
+  await audit(req.user.sub,'mail.test',null,{to,provider:mailProvider()});
+  res.json({ok:true,to,provider:mailProvider()});
 });
 
 app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username,u.email from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
@@ -438,7 +480,7 @@ try {
   console.log(`[OrbitDesk] Storage ready: ${dbMode()}`);
   const mail=mailStatus();
   console.log(`[OrbitDesk] Mail provider: ${mail.provider}; configured=${mail.configured}; from=${mail.from || '(not set)'}`);
-  if(!mail.configured) console.warn('[OrbitDesk] Resend email is not configured. Registration/email verification will remain unavailable until RESEND_API_KEY and RESEND_FROM_EMAIL are set.');
+  if(!mail.configured) console.warn('[OrbitDesk] Mail provider is not configured. Set MAIL_BRIDGE_URL + MAIL_BRIDGE_TOKEN for the free Google Apps Script mail bridge, or RESEND_API_KEY + RESEND_FROM_EMAIL.');
 }
 catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
