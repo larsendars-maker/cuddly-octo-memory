@@ -1,44 +1,23 @@
-# OrbitDesk React Render v11
+# OrbitDesk React Render v19
 
-OrbitDesk is a React + TypeScript + Vite workspace with a Node/Express backend, WebSocket chat and PostgreSQL.
+OrbitDesk browser/workspace for Render.
 
-## Main changes in v11
-- No automatic GДЗ site in quick sites.
-- Quick sites are user-controlled bookmarks.
-- Omnibox suggests popular sites while typing and remembers frequently visited sites.
-- Custom sites can be added directly from the omnibox.
-- Fixed username + editable visual display name.
-- Avatar accepts URL or data:image and is automatically fitted with object-fit: cover.
-- Themes and accent colors, plus optional lightweight particles. Particles are OFF by default and configurable in Settings.
-- Registration is blocked until the 6-digit email code is verified.
-- Google OAuth integration for Google Sheets: sign in, list, create and edit spreadsheets.
-- Local table editor with autosave and a lightweight AI-style formula helper.
+## Email verification
 
-## Render
-Use a Render Blueprint if you want render.yaml to create and wire the Postgres database automatically.
+v19 no longer uses SMTP or Brevo for verification. It uses Gmail API over HTTPS, so it works with a Render Free Web Service without direct SMTP connections.
 
-Required production envs for email verification:
-- SMTP_HOST
-- SMTP_PORT
-- SMTP_SECURE
-- SMTP_USER
-- SMTP_PASS
-- SMTP_FROM
+Read `GMAIL_RENDER_SETUP.md` for the one-time Google Cloud/OAuth setup.
 
-Required Google OAuth envs for Sheets:
-- GOOGLE_CLIENT_ID
-- GOOGLE_CLIENT_SECRET
-- GOOGLE_REDIRECT_URI
+## Admin
 
-`GOOGLE_REDIRECT_URI` must match the OAuth redirect configured in Google Cloud exactly, for example:
-`https://YOUR-RENDER-DOMAIN/api/integrations/google/callback`
+Only usernames listed in `admins.json` are configured admins. Current default:
 
-Build command:
-`npm install && npm run build`
+```json
+{"admins":["Larsenda"]}
+```
 
-Start command:
-`npm start`
+Admin panel includes accounts, history, audit, admins and mail connection status.
 
-## Tables + free Orbit AI
-Google connection is now inside the Tables workspace. There is no separate Connections tab.
-Orbit AI is a free built-in helper that does not require an external API key; it provides spreadsheet formulas, table-structure hints, and safe code/API examples.
+
+## v20 mail fix
+Verification email delivery now uses Resend over HTTPS; old SMTP/Gmail-sender settings are no longer required. Public auth endpoints are also exempted from the CSRF middleware so code confirmation/resend cannot fail with `CSRF_FAILED`.

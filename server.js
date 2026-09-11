@@ -13,7 +13,6 @@ import { WebSocketServer } from 'ws';
 import { initDb, q, dbMode } from './src/server/db.js';
 import { hashPassword, verifyPassword, requireAuth, getCookie, setCookie, clearCookie, createSession, destroySession, issueCsrf, validCsrf } from './src/server/auth.js';
 import { encryptBuffer, decryptBuffer } from './src/server/crypto.js';
-import nodemailer from 'nodemailer';
 import { google } from 'googleapis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,15 +29,50 @@ function isConfiguredAdmin(username){ return loadAdminUsernames().has(String(use
 function sha256(v){ return crypto.createHash('sha256').update(v).digest('hex'); }
 function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(v).toString('base64'); }
 function unb64(v){ return Buffer.from(v, 'base64'); }
-const mailer = (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) ? nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS}}) : null;
-function mailStatus(){ return {configured:Boolean(mailer),host:process.env.SMTP_HOST||'',from:process.env.SMTP_FROM||process.env.SMTP_USER||''}; }
+function mailStatus(){
+  return {
+    configured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL),
+    provider: 'resend-api',
+    from: process.env.RESEND_FROM_EMAIL || '',
+    name: process.env.RESEND_FROM_NAME || 'OrbitDesk'
+  };
+}
+
+function resendConfigured(){
+  return Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL);
+}
+
+async function sendViaResend({to, subject, text, html}){
+  if(!resendConfigured()){
+    const e=new Error('MAIL_API_NOT_CONFIGURED'); e.status=503; throw e;
+  }
+  const fromName=String(process.env.RESEND_FROM_NAME || 'OrbitDesk').replace(/[<>\r\n]/g,'').trim() || 'OrbitDesk';
+  const fromEmail=String(process.env.RESEND_FROM_EMAIL || '').trim();
+  const response=await fetch('https://api.resend.com/emails',{
+    method:'POST',
+    headers:{'Authorization':`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify({from:`${fromName} <${fromEmail}>`,to:[to],subject,text,html})
+  });
+  const raw=await response.text();
+  let data={}; try{ data=raw?JSON.parse(raw):{}; }catch{}
+  if(!response.ok){
+    const detail=data?.message || data?.name || raw || `RESEND_HTTP_${response.status}`;
+    const e=new Error(detail); e.status=response.status===401||response.status===403?502:502; e.provider='resend'; throw e;
+  }
+  return data;
+}
+
 async function sendVerificationEmail(user, reason='verify'){
-  if(!mailer) { const e=new Error('SMTP_NOT_CONFIGURED'); e.status=503; throw e; }
-  const code=String(Math.floor(100000+Math.random()*900000));
+  const code=String(crypto.randomInt(100000,1000000));
+  const subject=reason==='resend'?'OrbitDesk: новый код подтверждения':'OrbitDesk: код подтверждения';
+  const html=`<html><body style="font-family:Arial,sans-serif;background:#0b1020;padding:24px;color:#fff"><div style="max-width:520px;margin:auto;background:#151c31;border-radius:18px;padding:28px"><h2 style="margin-top:0">OrbitDesk</h2><p>Ваш код подтверждения:</p><p style="font-size:34px;font-weight:800;letter-spacing:10px;margin:18px 0">${code}</p><p>Код действует 15 минут.</p><p style="opacity:.7">Если вы не создавали аккаунт OrbitDesk, просто игнорируйте это письмо.</p></div></body></html>`;
+  const text=`Код OrbitDesk: ${code}. Он действует 15 минут.`;
+
+  // Never persist an un-sendable verification code. The code is written only
+  // after the provider has accepted the message.
+  await sendViaResend({to:user.email,subject,text,html});
   await q('delete from email_verification_codes where user_id=$1',[user.id]);
   await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
-  const subject=reason==='resend'?'OrbitDesk: новый код подтверждения':'OrbitDesk: код подтверждения';
-  await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:user.email,subject,text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
 }
 
 function googleConfigured(){ return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI); }
@@ -102,7 +136,7 @@ app.use('/api/email/resend', verificationLimiter);
 
 app.use((req,res,next)=>{
   if (!req.headers.cookie?.includes('od_csrf=')) issueCsrf(res);
-  if (!['POST','PUT','PATCH','DELETE'].includes(req.method) || !req.path.startsWith('/api/') || req.path === '/api/auth/login' || req.path === '/api/auth/register') return next();
+  if (!['POST','PUT','PATCH','DELETE'].includes(req.method) || !req.path.startsWith('/api/') || ['/api/auth/login','/api/auth/register','/api/auth/verify-code','/api/auth/resend-code','/api/email/resend'].includes(req.path)) return next();
   if (!validCsrf(req)) return res.status(403).json({error:'CSRF_FAILED'});
   next();
 });
@@ -182,7 +216,7 @@ app.post('/api/sites/add', requireAuth, async (req,res)=>{
   res.json(r.rows[0]);
 });
 
-app.get('/api/auth/mail-status', (_req,res)=>res.json({configured:mailStatus().configured}));
+app.get('/api/auth/mail-status', (_req,res)=>res.json(mailStatus()));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -190,7 +224,7 @@ app.post('/api/auth/register', async (req, res) => {
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username || '')) return res.status(400).json({ error: 'BAD_USERNAME' });
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
-    if (!mailer) return res.status(503).json({ error:'SMTP_NOT_CONFIGURED' });
+    if (!resendConfigured()) return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
     const h = await hashPassword(password);
@@ -203,7 +237,7 @@ app.post('/api/auth/register', async (req, res) => {
       await sendVerificationEmail(user,'verify');
     } catch (mailError) {
       await q('delete from users where id=$1',[user.id]);
-      if (mailError?.message === 'SMTP_NOT_CONFIGURED') return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});
+      if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});
       console.error('[mail]', mailError);
       return res.status(502).json({error:'EMAIL_SEND_FAILED'});
     }
@@ -226,7 +260,8 @@ app.post('/api/auth/login', async (req, res) => {
         await sendVerificationEmail({id:user.id,email:user.email}, 'verify');
       } catch (mailError) {
         console.error('[mail/login-unverified]', mailError);
-        if (mailError?.message === 'SMTP_NOT_CONFIGURED') return res.status(503).json({ error:'SMTP_NOT_CONFIGURED' });
+        if (mailError?.message === 'MAIL_API_NOT_CONFIGURED') return res.status(503).json({ error:'MAIL_API_NOT_CONFIGURED' });
+        console.error('[mail/login-unverified] provider error:', mailError?.message || mailError);
         return res.status(502).json({ error:'EMAIL_SEND_FAILED' });
       }
       return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email:user.email, codeSent:true });
@@ -264,7 +299,7 @@ app.post('/api/auth/resend-code', async (req,res)=>{try{
   if(r.rows[0].email_verified) return res.json({ok:true,alreadyVerified:true});
   await sendVerificationEmail({id:r.rows[0].id,email},'resend');
   res.json({ok:true});
-}catch(e){console.error(e);res.status(500).json({error:'RESEND_FAILED'});}});
+}catch(e){console.error('[mail/resend]',e);if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'});res.status(502).json({error:'EMAIL_SEND_FAILED'});}});
 
 app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});await sendVerificationEmail({id:r.rows[0].id,email:r.rows[0].email},'resend');res.json({ok:true});});
 
@@ -329,6 +364,22 @@ app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q(
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
 async function requireRole(req,res,roles){ const u=await q('select role,username from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; const effective=isConfiguredAdmin(u.rows[0]?.username)?'admin':role; if(!roles.includes(effective)) { res.status(403).json({error:'FORBIDDEN'}); return null; } return effective; }
+
+app.get('/api/admin/mail/status', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  res.json(mailStatus());
+});
+app.post('/api/admin/mail/test', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  const to=String(req.body?.email||process.env.BOOTSTRAP_ADMIN_EMAIL||'').trim().toLowerCase();
+  if(!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({error:'BAD_EMAIL'});
+  try{
+    await sendViaResend({to,subject:'OrbitDesk: тест почты',text:'Почта OrbitDesk работает. Тестовое сообщение.',html:'<p><b>OrbitDesk</b>: почта работает. Это тестовое сообщение.</p>'});
+  }catch(e){ console.error('[mail/test]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); return res.status(502).json({error:'EMAIL_SEND_FAILED'}); }
+  await audit(req.user.sub,'mail.test',null,{to,provider:'resend'});
+  res.json({ok:true,to,provider:'resend'});
+});
+
 app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username,u.email from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
 app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username,u.email from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit 1000'); res.json(r.rows); });
 
@@ -388,7 +439,7 @@ setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.termin
 app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const port = Number(process.env.PORT || 10000);
-try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); if (mailer) mailer.verify().then(()=>console.log('[OrbitDesk] SMTP connection verified')).catch(e=>console.warn('[OrbitDesk] SMTP verification failed:',e?.message||e)); else console.warn('[OrbitDesk] SMTP is not configured; email registration is disabled.'); }
+try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); console.log(`[OrbitDesk] Mail provider: Gmail API; OAuth configured=${gmailSenderConfigured()}`); const sender=await getGmailSenderIntegration(); console.log(`[OrbitDesk] Gmail sender connected=${Boolean(sender?.refreshToken)}${sender?.email?` (${sender.email})`:''}`); }
 catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`OrbitDesk listening on 0.0.0.0:${port}`));

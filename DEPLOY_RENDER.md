@@ -15,7 +15,7 @@ Registration requires a six-digit email code. Set these Environment Variables in
 - SMTP_PASS
 - SMTP_FROM
 
-Without SMTP, production registration intentionally returns `SMTP_NOT_CONFIGURED` instead of allowing unverified accounts.
+Email verification uses Brevo HTTP API so it works on Render Free, which blocks outbound SMTP ports 25/465/587. Production registration intentionally returns `MAIL_API_NOT_CONFIGURED` if Brevo is not configured instead of allowing unverified accounts.
 
 ## 4. Google Sheets
 Create OAuth credentials in Google Cloud and add:
@@ -46,3 +46,7 @@ Keep the same Render Postgres database resource connected to the service. Applic
 - Блокировка удаляет активные сессии пользователя и не даёт войти.
 - В «Журнале» фиксируется создание аккаунта с логином/email, подтверждение email, изменения ролей и блокировки.
 - Если пользователь после регистрации закрыл вкладку, при обычной попытке входа с правильным паролем OrbitDesk автоматически откроет поле для 6-значного кода.
+
+## Free email delivery (Brevo)
+
+Render Free blocks outbound SMTP ports, so OrbitDesk uses Brevo over HTTPS. Add `BREVO_API_KEY`, `BREVO_SENDER_EMAIL=orbitdesksupport@gmail.com`, and optionally `BREVO_SENDER_NAME=OrbitDesk` in the Web Service Environment. In Brevo, verify `orbitdesksupport@gmail.com` as a sender before testing. The Brevo Free plan currently allows 300 email sends/day.
