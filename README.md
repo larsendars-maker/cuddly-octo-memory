@@ -1,14 +1,27 @@
-# Arena Nexus Online v6
+# Arena Nexus Online v8
 
-Render Web Service + WebSocket MOBA prototype.
+Render-ready online MOBA.
 
 ## Render
+- Service: Web Service
 - Runtime: Node
 - Build Command: `npm install`
 - Start Command: `npm start`
-- Health Check: `/health`
+- Health Check Path: `/health`
 
-The game uses a single Canvas client and an authoritative Node.js WebSocket server for players, minions, towers, HP and combat.
+## Features
+- 3 MOBA lanes with curved dirt trails instead of wide roads
+- river/water with animated highlights
+- forest zones, trees, camps and rune spots
+- Dota-like wave pacing: melee + ranged every wave, siege on every 3rd wave, upgraded siege on every 6th
+- neutral camps with gold/XP and respawn timers
+- server-side movement, combat, creeps and towers
+- gold, XP, levels and skill points
+- skill leveling with Q/W/E/R
+- shop: Boots, Blade, Armor, Wand
+- desktop click-to-move/click-to-attack + WASD
+- mobile joystick + touch abilities
+- smooth client interpolation and lightweight particle effects
 
 ## GitHub
-Upload these files to the repository root: `index.html`, `server.js`, `package.json`, `render.yaml`.
+Put all files in the repository root so `package.json`, `server.js` and `index.html` are at the top level.
