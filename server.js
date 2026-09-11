@@ -33,8 +33,8 @@ function mailStatus(){
   return {
     configured: mailConfigured(),
     provider: mailProvider(),
-    from: process.env.RESEND_FROM_EMAIL || process.env.MAIL_FROM_EMAIL || 'orbitdesksupport@gmail.com',
-    name: process.env.RESEND_FROM_NAME || process.env.MAIL_FROM_NAME || 'OrbitDesk'
+    from: process.env.MAIL_FROM_EMAIL || process.env.RESEND_FROM_EMAIL || 'orbitdesksupport@gmail.com',
+    name: process.env.MAIL_FROM_NAME || process.env.RESEND_FROM_NAME || 'OrbitDesk'
   };
 }
 
@@ -101,7 +101,7 @@ async function sendViaMail(payload){
   const p=mailProvider();
   if(p==='apps-script') return sendViaBridge(payload);
   if(p==='resend') return sendViaResend(payload);
-  const e=new Error('MAIL_API_NOT_CONFIGURED'); e.status=503; throw e;
+  const e=new Error('MAIL_API_NOT_CONFIGURED'); e.status=503; e.provider='none'; throw e;
 }
 
 async function sendVerificationEmail(user, reason='verify'){
@@ -465,6 +465,7 @@ app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
   res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)});
 });
 app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.post('/api/admin/users/:id/resend-verification', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('select id,username,email,email_verified,blocked from users where id=$1',[targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); const u=r.rows[0]; if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED'}); if(u.email_verified)return res.json({ok:true,alreadyVerified:true}); try { await sendVerificationEmail({id:u.id,email:u.email},'resend'); await audit(req.user.sub,'admin.email_verification.resend',u.id,{email:u.email}); res.json({ok:true,email:u.email}); } catch(e){ console.error('[admin/mail/resend]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED' || e?.message==='MAIL_BRIDGE_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); } });
 app.get('/api/admin/admins', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; res.json({file:ADMIN_FILE,admins:[...loadAdminUsernames()]}); });
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
@@ -524,7 +525,7 @@ try {
   console.log(`[OrbitDesk] Storage ready: ${dbMode()}`);
   const mail=mailStatus();
   console.log(`[OrbitDesk] Mail provider: ${mail.provider}; configured=${mail.configured}; from=${mail.from || '(not set)'}`);
-  if(!mail.configured) console.warn('[OrbitDesk] Mail provider is not configured. Set MAIL_BRIDGE_URL + MAIL_BRIDGE_TOKEN for the free Google Apps Script mail bridge, or RESEND_API_KEY + RESEND_FROM_EMAIL.');
+  if(!mail.configured) console.warn('[OrbitDesk] Mail provider is not configured. For free Render use MAIL_BRIDGE_URL + MAIL_BRIDGE_TOKEN (Google Apps Script).');
 }
 catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
