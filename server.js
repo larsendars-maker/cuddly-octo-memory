@@ -22,6 +22,16 @@ function sha256(v){ return crypto.createHash('sha256').update(v).digest('hex'); 
 function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(v).toString('base64'); }
 function unb64(v){ return Buffer.from(v, 'base64'); }
 const mailer = (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) ? nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS}}) : null;
+function mailStatus(){ return {configured:Boolean(mailer),host:process.env.SMTP_HOST||'',from:process.env.SMTP_FROM||process.env.SMTP_USER||''}; }
+async function sendVerificationEmail(user, reason='verify'){
+  if(!mailer) { const e=new Error('SMTP_NOT_CONFIGURED'); e.status=503; throw e; }
+  const code=String(Math.floor(100000+Math.random()*900000));
+  await q('delete from email_verification_codes where user_id=$1',[user.id]);
+  await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
+  const subject=reason==='resend'?'OrbitDesk: новый код подтверждения':'OrbitDesk: код подтверждения';
+  await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:user.email,subject,text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
+}
+
 function googleConfigured(){ return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI); }
 function googleClient(){ return new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI); }
 async function audit(actorId, action, targetId=null, metadata={}){ try{ await q('insert into audit_logs(actor_id,action,target_id,metadata) values($1,$2,$3,$4)',[actorId,action,targetId,metadata]); }catch(e){ console.warn('[audit]',e.message); } }
@@ -159,12 +169,15 @@ app.post('/api/sites/add', requireAuth, async (req,res)=>{
   res.json(r.rows[0]);
 });
 
+app.get('/api/auth/mail-status', (_req,res)=>res.json({configured:mailStatus().configured}));
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username || '')) return res.status(400).json({ error: 'BAD_USERNAME' });
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
+    if (!mailer) return res.status(503).json({ error:'SMTP_NOT_CONFIGURED' });
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
     const h = await hashPassword(password);
@@ -173,11 +186,14 @@ app.post('/api/auth/register', async (req, res) => {
     const role = bootstrapAdmin ? 'admin' : 'user';
     const r = await q('insert into users(username,email,password_hash,xp,role,email_verified) values($1,$2,$3,50,$4,false) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role]);
     const user = r.rows[0];
-    if (!mailer && String(process.env.NODE_ENV || 'production') === 'production') return res.status(503).json({ error:'SMTP_NOT_CONFIGURED' });
-    const code=String(Math.floor(100000+Math.random()*900000));
-    await q('delete from email_verification_codes where user_id=$1',[user.id]);
-    await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[user.id,sha256(code)]);
-    if(mailer) await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:user.email,subject:'OrbitDesk: код подтверждения',text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
+    try {
+      await sendVerificationEmail(user,'verify');
+    } catch (mailError) {
+      await q('delete from users where id=$1',[user.id]);
+      if (mailError?.message === 'SMTP_NOT_CONFIGURED') return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});
+      console.error('[mail]', mailError);
+      return res.status(502).json({error:'EMAIL_SEND_FAILED'});
+    }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
     res.json({pendingVerification:true,email:user.email,username:user.username});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
@@ -221,15 +237,11 @@ app.post('/api/auth/resend-code', async (req,res)=>{try{
   const r=await q('select id,email,email_verified from users where lower(email)=lower($1)',[email]);
   if(!r.rowCount) return res.status(404).json({error:'USER_NOT_FOUND'});
   if(r.rows[0].email_verified) return res.json({ok:true,alreadyVerified:true});
-  if(!mailer) return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});
-  const code=String(Math.floor(100000+Math.random()*900000));
-  await q('delete from email_verification_codes where user_id=$1',[r.rows[0].id]);
-  await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[r.rows[0].id,sha256(code)]);
-  await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:email,subject:'OrbitDesk: код подтверждения',text:`Код OrbitDesk: ${code}. Он действует 15 минут.`,html:`<h2>OrbitDesk</h2><p>Код подтверждения:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p><p>Код действует 15 минут.</p>`});
+  await sendVerificationEmail({id:r.rows[0].id,email},'resend');
   res.json({ok:true});
 }catch(e){console.error(e);res.status(500).json({error:'RESEND_FAILED'});}});
 
-app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});if(!mailer)return res.status(503).json({error:'SMTP_NOT_CONFIGURED'});const code=String(Math.floor(100000+Math.random()*900000));await q('delete from email_verification_codes where user_id=$1',[req.user.sub]);await q("insert into email_verification_codes(user_id,code_hash,expires_at,attempts) values($1,$2,now()+interval '15 minutes',0)",[req.user.sub,sha256(code)]);await mailer.sendMail({from:process.env.SMTP_FROM||process.env.SMTP_USER,to:r.rows[0].email,subject:'OrbitDesk: новый код подтверждения',text:`Код OrbitDesk: ${code}`,html:`<h2>OrbitDesk</h2><p>Новый код:</p><p style="font-size:28px;font-weight:700;letter-spacing:8px">${code}</p>`});res.json({ok:true});});
+app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});await sendVerificationEmail({id:r.rows[0].id,email:r.rows[0].email},'resend');res.json({ok:true});});
 
 app.get('/api/settings', requireAuth, async (req, res) => {
   const r = await q('select payload from user_settings where user_id=$1', [req.user.sub]);
