@@ -20,6 +20,7 @@ export async function initDb() {
       email varchar(160) unique not null,
       password_hash text not null,
       xp integer not null default 0,
+      role varchar(20) not null default 'user',
       created_at timestamptz not null default now()
     );
     create table if not exists user_settings (
@@ -78,6 +79,16 @@ export async function initDb() {
       created_at timestamptz not null default now()
     );
   `);
+  await pool.query(`alter table users add column if not exists role varchar(20) not null default 'user'`);
+  await pool.query(`update users set role='user' where role is null or role not in ('admin','assistant','user')`);
+  if (process.env.BOOTSTRAP_ADMIN_EMAIL) {
+    await pool.query(`update users set role='admin' where lower(email)=lower($1)`, [process.env.BOOTSTRAP_ADMIN_EMAIL]);
+  } else {
+    const count = await pool.query('select count(*)::int as n from users');
+    if (count.rows[0].n === 0) {
+      // The first registered account becomes admin only on a brand-new database.
+    }
+  }
   // Upgrade old bookmarks schema safely.
   await pool.query(`alter table bookmarks add column if not exists icon varchar(8) not null default '🌐'`);
   await pool.query(`alter table bookmarks add column if not exists category varchar(30) not null default 'custom'`);

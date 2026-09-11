@@ -42,17 +42,17 @@ function normalizeSettings(s = {}) {
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'OrbitDesk', db: Boolean(process.env.DATABASE_URL) }));
-app.get('/api/config', (_req, res) => res.json({ sites: PRESET_SITES }));
+app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(role)).map(({roles,...x})=>x) }); });
 
 const PRESET_SITES = [
-  { id: 'gdz', title: 'ГДЗ', url: 'https://gdz.top/', icon: '📚', category: 'study' },
-  { id: 'sfpd', title: 'SFPD DB', url: 'https://sfpd-gov.ru/db/', icon: '🛡️', category: 'rp' },
-  { id: 'evolve', title: 'Evolve RP', url: 'https://evolve-rp.su/', icon: '🎮', category: 'rp' },
-  { id: 'vk', title: 'VK', url: 'https://vk.com/', icon: '💬', category: 'social' },
-  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com/', icon: '▶️', category: 'media' },
-  { id: 'google', title: 'Google', url: 'https://www.google.com/', icon: '🔎', category: 'web' },
-  { id: 'lichess', title: 'Lichess', url: 'https://lichess.org/', icon: '♟️', category: 'games' },
-  { id: 'crazygames', title: 'CrazyGames', url: 'https://www.crazygames.com/', icon: '🎯', category: 'games' }
+  { id: 'gdz', title: 'ГДЗ', url: 'https://gdz.top/', icon: '📚', category: 'study', roles: ['user','assistant','admin'] },
+  { id: 'vk', title: 'VK', url: 'https://vk.com/', icon: '💬', category: 'social', roles: ['user','assistant','admin'] },
+  { id: 'evolve', title: 'Evolve RP', url: 'https://evolve-rp.su/', icon: '🎮', category: 'rp', roles: ['assistant','admin'] },
+  { id: 'sfpd', title: 'SFPD DB', url: 'https://sfpd-gov.ru/db/', icon: '🛡️', category: 'rp', roles: ['assistant','admin'] },
+  { id: 'youtube', title: 'YouTube', url: 'https://www.youtube.com/', icon: '▶️', category: 'media', roles: ['user','assistant','admin'] },
+  { id: 'google', title: 'Google', url: 'https://www.google.com/', icon: '🔎', category: 'web', roles: ['user','assistant','admin'] },
+  { id: 'lichess', title: 'Lichess', url: 'https://lichess.org/', icon: '♟️', category: 'games', roles: ['user','assistant','admin'] },
+  { id: 'crazygames', title: 'CrazyGames', url: 'https://www.crazygames.com/', icon: '🎯', category: 'games', roles: ['assistant','admin'] }
 ];
 
 app.post('/api/auth/register', async (req, res) => {
@@ -64,10 +64,13 @@ app.post('/api/auth/register', async (req, res) => {
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
     const h = await hashPassword(password);
-    const r = await q('insert into users(username,email,password_hash,xp) values($1,$2,$3,50) returning id,username,email,xp,created_at', [username, email, h]);
+    const c = await q('select count(*)::int as n from users');
+    const bootstrapAdmin = process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase();
+    const role = bootstrapAdmin || Number(c.rows[0].n) === 0 ? 'admin' : 'user';
+    const r = await q('insert into users(username,email,password_hash,xp,role) values($1,$2,$3,50,$4) returning id,username,email,xp,role,created_at', [username, email, h, role]);
     const user = r.rows[0];
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
-    res.json({ token: signUser(user), user: { ...user, rank: rank(user.xp) } });
+    res.json({ token: signUser(user), user: { ...user, role: user.role, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -78,11 +81,11 @@ app.post('/api/auth/login', async (req, res) => {
     const user = r.rows[0];
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
-    res.json({ token: signUser(user), user: { id: user.id, username: user.username, email: user.email, xp: user.xp, rank: rank(user.xp) } });
+    res.json({ token: signUser(user), user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
 app.get('/api/me', requireAuth, async (req, res) => {
-  const r = await q('select id,username,email,xp,created_at from users where id=$1', [req.user.sub]);
+  const r = await q('select id,username,email,xp,role,created_at from users where id=$1', [req.user.sub]);
   if (!r.rowCount) return res.status(404).json({ error: 'USER_NOT_FOUND' });
   res.json({ ...r.rows[0], rank: rank(r.rows[0].xp) });
 });
@@ -120,6 +123,9 @@ app.post('/api/tables', requireAuth, async (req, res) => { const name = String(r
 app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q('update tables_data set name=$1,payload=$2,updated_at=now() where id=$3 and user_id=$4 returning *', [String(req.body?.name || 'Таблица').slice(0, 120), req.body?.payload || {}, req.params.id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(r.rows[0]); });
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
+async function requireRole(req,res,roles){ const u=await q('select role from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; if(!roles.includes(role)) { res.status(403).json({error:'FORBIDDEN'}); return null; } return role; }
+app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,created_at from users order by id desc limit 200'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp)}))); });
+app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role', [role,Number(req.params.id)]); if(!r.rowCount) return res.status(404).json({error:'NOT_FOUND'}); res.json({...r.rows[0],rank:rank(r.rows[0].xp)}); });
 app.get('/api/users/search', requireAuth, async (req, res) => { const term = String(req.query.q || '').trim(); const r = await q('select id,username,xp from users where id<>$1 and username ilike $2 order by username limit 20', [req.user.sub, `%${term}%`]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
@@ -170,7 +176,8 @@ try {
   await initDb();
 } catch (e) {
   console.error('DATABASE_INIT_FAILED');
-  console.error(process.env.DATABASE_URL ? e : 'DATABASE_URL is missing. Configure Render Postgres / DATABASE_URL.');
+  console.error('DATABASE_URL:', process.env.DATABASE_URL ? 'present' : 'MISSING');
+  console.error('Render fix: deploy this repository as a Blueprint so render.yaml creates orbitdesk-db, or set DATABASE_URL on the Web Service to the Postgres internal connection string.');
   process.exit(1);
 }
 server.listen(port, '0.0.0.0', () => console.log(`OrbitDesk listening on 0.0.0.0:${port}`));
