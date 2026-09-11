@@ -1,24 +1,21 @@
-# OrbitDesk React v6 — Render deployment
+# OrbitDesk React Render v8
 
-## Important
-Deploy this repository as a **Render Blueprint**, not as a manually-created Web Service, so `render.yaml` can create and wire the Postgres database.
+## Fix for the current Render deploy
+This version does NOT crash when `DATABASE_URL` or `PHOTO_ENCRYPTION_KEY` is missing.
 
-The Blueprint automatically provisions:
-- `orbitdesk` Web Service
-- `orbitdesk-db` Postgres
-- `DATABASE_URL` from the database connection string
-- `PHOTO_ENCRYPTION_KEY` via Render-generated secret
+### Existing Render Web Service
+Set:
+- Build Command: `npm install && npm run build`
+- Start Command: `npm start`
+- Health Check Path: `/health`
 
-Only `BOOTSTRAP_ADMIN_EMAIL` is entered manually during the first Blueprint sync.
+If no PostgreSQL is connected, the app starts with temporary in-memory storage. Data may reset when the instance restarts/redeploys.
 
-## Render
-1. Push the complete repository to GitHub.
-2. In Render choose **New → Blueprint**.
-3. Select the repository.
-4. Confirm the Blueprint resources.
-5. Enter `BOOTSTRAP_ADMIN_EMAIL` when Render prompts for it.
+### Persistent production setup
+Create a Render PostgreSQL database separately, then add this Web Service environment variable:
+`DATABASE_URL=<PostgreSQL Internal Database URL>`
 
-Do not put `DATABASE_URL` or `PHOTO_ENCRYPTION_KEY` in GitHub. Render manages them as environment variables.
+Recommended secret:
+`PHOTO_ENCRYPTION_KEY=<64 hex characters>`
 
-## Manual existing Web Service
-If you insist on keeping the old manually-created service, you must manually attach a Postgres database and set `DATABASE_URL` to its **Internal Database URL**. The Blueprint is the recommended path because it wires the service and database automatically.
+`render.yaml` is a Blueprint example, but an already-created Web Service will NOT apply it automatically.

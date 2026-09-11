@@ -9,16 +9,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: orbitdesk-db
-          property: connectionString
       - key: PHOTO_ENCRYPTION_KEY
         generateValue: true
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
 
-databases:
-  - name: orbitdesk-db
-    plan: free
-    region: frankfurt
+# Optional persistence: add a Render PostgreSQL database and set DATABASE_URL
+# in the existing Web Service to the database Internal URL.
+# This project can start without it using temporary in-memory storage.

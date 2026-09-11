@@ -1,9 +1,11 @@
 {
   "name": "orbitdesk",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20 <27" },
+  "engines": {
+    "node": ">=20 <27"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

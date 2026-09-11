@@ -2,16 +2,32 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import express from 'express';
 import multer from 'multer';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer } from 'ws';
-import { initDb, q } from './src/server/db.js';
+import { initDb, q, dbMode } from './src/server/db.js';
 import { hashPassword, verifyPassword, requireAuth, getCookie, setCookie, clearCookie, createSession, destroySession, issueCsrf, validCsrf } from './src/server/auth.js';
 import { encryptBuffer, decryptBuffer } from './src/server/crypto.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
+async function ensureFrontendBuild() {
+  const distIndex = path.join(__dirname, 'dist', 'index.html');
+  if (fs.existsSync(distIndex)) return;
+  console.log('[OrbitDesk] dist/index.html is missing; running npm run build automatically.');
+  try {
+    await execFileAsync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: __dirname, env: process.env, timeout: 120000 });
+    if (!fs.existsSync(distIndex)) throw new Error('Vite build completed but dist/index.html was not created');
+  } catch (e) {
+    console.error('[OrbitDesk] Frontend build failed:', e?.stderr || e?.message || e);
+    throw e;
+  }
+}
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -82,7 +98,7 @@ function normalizeSettings(s = {}) {
   };
 }
 
-app.get('/health', async (_req, res) => { try { await q('select 1'); res.json({ ok: true, service: 'OrbitDesk', db: true }); } catch { res.status(503).json({ ok: false, service: 'OrbitDesk', db: false }); } });
+app.get('/health', async (_req, res) => { try { await q('select 1'); res.json({ ok: true, service: 'OrbitDesk', db: dbMode() }); } catch { res.status(503).json({ ok: false, service: 'OrbitDesk', db: false }); } });
 app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(role)).map(({roles,...x})=>x) }); });
 
 const PRESET_SITES = [
@@ -257,15 +273,7 @@ setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.termin
 app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const port = Number(process.env.PORT || 10000);
-if (process.env.NODE_ENV === 'production' && !/^[0-9a-fA-F]{64}$/.test(process.env.PHOTO_ENCRYPTION_KEY || '')) { console.error('PHOTO_ENCRYPTION_KEY must be 32-byte hex secret'); process.exit(1); }
-try {
-  await initDb();
-console.log('[OrbitDesk] Database connected and schema ready.');
-} catch (e) {
-  console.error('DATABASE_INIT_FAILED');
-  console.error('DATABASE_URL:', process.env.DATABASE_URL ? 'present' : 'MISSING');
-  console.error('Set DATABASE_URL to the Render Postgres INTERNAL URL, or deploy via Blueprint so render.yaml wires the database automatically.');
-  process.exit(1);
-}
+try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); }
+catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`OrbitDesk listening on 0.0.0.0:${port}`));
