@@ -1,20 +1,19 @@
-# OrbitDesk — Gmail SMTP через Render
+# SMTP for OrbitDesk on Render
 
-Для `orbitdesksupport@gmail.com` используй Google App Password, а не обычный пароль Gmail.
+For Gmail, set these Web Service environment variables:
 
-## Render Environment Group
+- SMTP_HOST = smtp.gmail.com
+- SMTP_PORT = 587
+- SMTP_SECURE = false
+- SMTP_USER = your OrbitDesk Gmail address
+- SMTP_PASS = Google App Password (not the normal Gmail password)
+- SMTP_FROM = your OrbitDesk Gmail address
 
-```text
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=orbitdesksupport@gmail.com
-SMTP_PASS=<16-значный App Password Google>
-SMTP_FROM=orbitdesksupport@gmail.com
-SMTP_SECURE=false
-```
+The user receiving a verification email can use any supported email provider. The SMTP account above is only the sender used by the OrbitDesk server.
 
-Не коммить App Password в GitHub. Храни его только в Render Environment / Environment Group.
+## Verification flow
 
-## После изменения
-
-Сохрани переменные и выполни новый Deploy сервиса OrbitDesk. После запуска новая регистрация отправит 6-значный код на email пользователя. При повторной отправке кода интерфейс ставит 60-секундную паузу.
+- Registration sends a 6-digit verification code.
+- Verification and resend endpoints use the CSRF cookie/header.
+- Logging in with an unverified account automatically sends a fresh code and opens the code-entry state in the client.
+- Verification/resend requests are rate-limited to reduce mail abuse.
