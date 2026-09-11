@@ -37,4 +37,4 @@ services:
 databases:
   - name: orbitdesk-db
     plan: free
-    region: frankfurt
+    region: virginia

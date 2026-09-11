@@ -1,11 +1,11 @@
-# OrbitDesk — Gmail API setup (free Render)
+# OrbitDesk — Resend API setup (free Render)
 
-OrbitDesk v19 does NOT use SMTP for verification emails. This avoids Render Free's SMTP port restrictions. It sends through the Gmail API over HTTPS.
+OrbitDesk v19 does NOT use SMTP for verification emails. This avoids Render Free's SMTP port restrictions. It sends through the Resend API over HTTPS.
 
 ## 1. Google Cloud
 
 1. Open https://console.cloud.google.com/ and create/select a project.
-2. Enable **Gmail API**.
+2. Enable **Resend API**.
 3. Configure **Google Auth platform / OAuth consent screen**.
 4. Add `orbitdesksupport@gmail.com` as a test user if the app is External and in testing.
 5. Create an **OAuth 2.0 Client ID**. A Web application client is convenient for Render.
@@ -19,7 +19,7 @@ The required Gmail OAuth scope is:
 
 `https://www.googleapis.com/auth/gmail.send`
 
-Google's Gmail API requires OAuth 2.0 authorization to send messages, and `messages.send` sends a base64url-encoded MIME message. See the official docs:
+Google's Resend API requires OAuth 2.0 authorization to send messages, and `messages.send` sends a base64url-encoded MIME message. See the official docs:
 https://developers.google.com/workspace/gmail/api/guides/sending
 
 ## 2. Render variables
@@ -56,4 +56,4 @@ The refresh token is stored encrypted in PostgreSQL, not in the frontend.
 
 ## Notes
 
-Google API usage is subject to quotas. Standard Gmail API usage is currently available at no additional cost; current official quotas are documented by Google.
+Google API usage is subject to quotas. Standard Resend API usage is currently available at no additional cost; current official quotas are documented by Google.

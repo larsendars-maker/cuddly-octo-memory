@@ -4,7 +4,7 @@ OrbitDesk browser/workspace for Render.
 
 ## Email verification
 
-v19 no longer uses SMTP or Brevo for verification. It uses Gmail API over HTTPS, so it works with a Render Free Web Service without direct SMTP connections.
+v19 no longer uses SMTP or Brevo for verification. It uses Resend API over HTTPS, so it works with a Render Free Web Service without direct SMTP connections.
 
 Read `GMAIL_RENDER_SETUP.md` for the one-time Google Cloud/OAuth setup.
 

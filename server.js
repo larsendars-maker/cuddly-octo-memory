@@ -439,7 +439,14 @@ setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.termin
 app.get(/.*/, (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 const port = Number(process.env.PORT || 10000);
-try { await initDb(); await ensureFrontendBuild(); console.log(`[OrbitDesk] Storage ready: ${dbMode()}`); console.log(`[OrbitDesk] Mail provider: Gmail API; OAuth configured=${gmailSenderConfigured()}`); const sender=await getGmailSenderIntegration(); console.log(`[OrbitDesk] Gmail sender connected=${Boolean(sender?.refreshToken)}${sender?.email?` (${sender.email})`:''}`); }
+try {
+  await initDb();
+  await ensureFrontendBuild();
+  console.log(`[OrbitDesk] Storage ready: ${dbMode()}`);
+  const mail=mailStatus();
+  console.log(`[OrbitDesk] Mail provider: ${mail.provider}; configured=${mail.configured}; from=${mail.from || '(not set)'}`);
+  if(!mail.configured) console.warn('[OrbitDesk] Resend email is not configured. Registration/email verification will remain unavailable until RESEND_API_KEY and RESEND_FROM_EMAIL are set.');
+}
 catch (e) { console.error('[OrbitDesk] Startup failed:', e?.message || e); process.exit(1); }
 setInterval(() => q('delete from sessions where expires_at <= now()').catch(()=>{}), 60 * 60 * 1000).unref();
 server.listen(port, '0.0.0.0', () => console.log(`OrbitDesk listening on 0.0.0.0:${port}`));
