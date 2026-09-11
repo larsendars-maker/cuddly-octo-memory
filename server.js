@@ -262,6 +262,30 @@ app.put('/api/tabs', requireAuth, async (req, res) => {
 app.post('/api/history', requireAuth, async (req,res)=>{ const url=String(req.body?.url||''); const title=String(req.body?.title||'').slice(0,200); if(!validUrl(url)) return res.status(400).json({error:'BAD_URL'}); await q('insert into visits(user_id,url,title) values($1,$2,$3)',[req.user.sub,url,title]); await q('delete from visits where user_id=$1 and id not in (select id from visits where user_id=$1 order by visited_at desc limit 500)',[req.user.sub]); res.json({ok:true}); });
 app.get('/api/history', requireAuth, async (req,res)=>{ const r=await q('select id,url,title,visited_at from visits where user_id=$1 order by visited_at desc limit 200',[req.user.sub]); res.json(r.rows); });
 
+// Built-in free helper: deterministic spreadsheet/code assistant. No external API key required.
+app.post('/api/ai/help', requireAuth, async (req,res)=>{
+  try{
+    const prompt=String(req.body?.prompt||'').trim().slice(0,1200);
+    const table=req.body?.table;
+    const lower=prompt.toLowerCase();
+    if(!prompt) return res.status(400).json({error:'AI_PROMPT_REQUIRED'});
+    let answer='';
+    const cols=Array.isArray(table?.columns)?table.columns.join(', '):'';
+    if(/формул|formula|sum|сумм/i.test(lower)){
+      const col=(Array.isArray(table?.columns)?table.columns.find((c)=>/(сум|цена|amount|price|count|кол)/i.test(String(c))):'C')||'C';
+      answer=`Попробуй формулу Google Sheets:\n=SUM(${col}2:${col}100)\n\nЕсли нужен итог только по условию:\n=SUMIF(A:A;\"условие\";${col}:${col})\n\nТекущие столбцы: ${cols||'не указаны'}`;
+    } else if(/код|javascript|typescript|api|fetch|node|python/i.test(lower)){
+      answer=`Пример безопасного запроса:\nconst response = await fetch('/api/example', {\n  method: 'POST',\n  headers: { 'content-type': 'application/json' },\n  body: JSON.stringify({ value: 123 })\n});\nconst data = await response.json();\n\nДля OrbitDesk не вставляй секреты/API-ключи в frontend — держи их на сервере.`;
+    } else if(/структур|таблиц|колон|sheet|google/i.test(lower)){
+      answer=`По таблице можно сделать так:\n1. Первая строка — понятные заголовки.\n2. Один тип данных на один столбец.\n3. Числа не смешивать с текстом.\n4. Для итогов использовать отдельную строку или SUM/SUMIF.\n5. Для Google Sheets сначала выбери таблицу, затем нужный диапазон.\n\nСтолбцы: ${cols||'не указаны'}`;
+    } else {
+      answer=`Бесплатный Orbit AI может помочь с формулами, структурой таблиц и небольшими фрагментами кода.\n\nПопробуй запрос:\n• «формула суммы столбца C»\n• «как сделать SUMIF»\n• «напиши JS fetch для API»\n• «проверь структуру этой таблицы»`;
+    }
+    await audit(req.user.sub,'ai.help',null,{prompt:prompt.slice(0,180)});
+    res.json({answer});
+  }catch(e){console.error(e);res.status(500).json({error:'AI_HELP_FAILED'});}
+});
+
 app.get('/api/tables', requireAuth, async (req, res) => { const r = await q('select id,name,payload,updated_at from tables_data where user_id=$1 order by updated_at desc', [req.user.sub]); res.json(r.rows); });
 app.post('/api/tables', requireAuth, async (req, res) => { const name = String(req.body?.name || 'Новая таблица').slice(0, 120); const payload = req.body?.payload || { columns: ['A', 'B', 'C'], rows: [['', '', '']] }; const r = await q('insert into tables_data(user_id,name,payload) values($1,$2,$3) returning *', [req.user.sub, name, payload]); await q('update users set xp=xp+10 where id=$1', [req.user.sub]); res.json(r.rows[0]); });
 app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q('update tables_data set name=$1,payload=$2,updated_at=now() where id=$3 and user_id=$4 returning *', [String(req.body?.name || 'Таблица').slice(0, 120), req.body?.payload || {}, req.params.id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(r.rows[0]); });

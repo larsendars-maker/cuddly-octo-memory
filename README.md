@@ -38,3 +38,7 @@ Build command:
 
 Start command:
 `npm start`
+
+## Tables + free Orbit AI
+Google connection is now inside the Tables workspace. There is no separate Connections tab.
+Orbit AI is a free built-in helper that does not require an external API key; it provides spreadsheet formulas, table-structure hints, and safe code/API examples.
