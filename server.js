@@ -681,7 +681,24 @@ app.post('/api/friends/request', requireAuth, async (req, res) => { const to = N
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
 app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp,u.last_seen_at from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp), online:sockets.has(Number(x.user_id)) }))); });
-app.get('/api/messages/:userId', requireAuth, async (req, res) => { const chat=await syncChatAccess(req.user.sub); if(!chat.chat_enabled) return res.status(403).json({error:'CHAT_LOCKED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.read_at,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
+app.post('/api/messages/:userId', requireAuth, async (req,res)=>{
+  try{
+    const chat=await syncChatAccess(req.user.sub);
+    if(!chat.chat_enabled) return res.status(403).json({error:'CHAT_LOCKED'});
+    const to=Number(req.params.userId);
+    const body=String(req.body?.body||'').normalize('NFKC').trim().slice(0,2000);
+    if(!Number.isFinite(to)||to<=0||!body) return res.status(400).json({error:'BAD_MESSAGE'});
+    const recipient=await q('select id,username,chat_enabled,blocked from users where id=$1',[to]);
+    if(!recipient.rowCount || recipient.rows[0].blocked || recipient.rows[0].chat_enabled!==true) return res.status(403).json({error:'CHAT_RECIPIENT_UNAVAILABLE'});
+    const r=await q('insert into messages(sender_id,recipient_id,body) values($1,$2,$3) returning id,sender_id,recipient_id,body,read_at,created_at',[req.user.sub,to,body]);
+    const sender=(await q('select username from users where id=$1',[req.user.sub])).rows[0]?.username||'user';
+    const msg={...r.rows[0],sender_name:sender};
+    const peer=sockets.get(to); if(peer) send(peer,{type:'chat',message:msg,sender_name:sender});
+    res.json({ok:true,message:msg});
+  }catch(e){console.error('[chat-post]',e);res.status(500).json({error:'CHAT_SEND_FAILED'});}
+});
+
+app.get('/api/messages/:userId', requireAuth, async (req, res) => { const chat=await syncChatAccess(req.user.sub); if(!chat.chat_enabled) return res.status(403).json({error:'CHAT_LOCKED'}); const other = Number(req.params.userId); const recipient=await q('select id,blocked,chat_enabled from users where id=$1',[other]); if(!recipient.rowCount || recipient.rows[0].blocked) return res.status(404).json({error:'CHAT_RECIPIENT_UNAVAILABLE'}); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.read_at,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
 app.post('/api/messages/:userId/read', requireAuth, async (req,res)=>{ const other=Number(req.params.userId); const r=await q('update messages set read_at=coalesce(read_at,now()) where sender_id=$1 and recipient_id=$2 and read_at is null returning id',[other,req.user.sub]); const peer=sockets.get(other); if(peer && r.rowCount) send(peer,{type:'read',from:Number(req.user.sub),messageIds:r.rows.map(x=>x.id)}); res.json({ok:true,count:r.rowCount}); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });
@@ -735,8 +752,8 @@ wss.on('connection', async (ws, req) => {
         const access = await syncChatAccess(ws.userId);
         if (!access.chat_enabled) return send(ws, { type: 'error', message: 'Чат закрыт' });
         const to = Number(data.to); const body = String(data.body || '').normalize('NFKC').trim().slice(0, 2000); if (!to || !body) return;
-        const fr = await q(`select 1 from friendships where status='accepted' and ((requester_id=$1 and addressee_id=$2) or (requester_id=$2 and addressee_id=$1))`, [ws.userId, to]);
-        if (!fr.rowCount) return send(ws, { type: 'error', message: 'Доступно только друзьям' });
+        const recipient = await q('select id,username,chat_enabled,blocked from users where id=$1',[to]);
+        if (!recipient.rowCount || recipient.rows[0].blocked || recipient.rows[0].chat_enabled!==true) return send(ws,{type:'error',message:'Пользователь сейчас недоступен для чата'});
         const r = await q('insert into messages(sender_id,recipient_id,body) values($1,$2,$3) returning id,sender_id,recipient_id,body,created_at', [ws.userId, to, body]);
         const msg = { type: 'chat', message: {...r.rows[0],read_at:null}, sender_name: ws.username }; send(ws, msg); const peer = sockets.get(to); if (peer) send(peer, msg);
       }
