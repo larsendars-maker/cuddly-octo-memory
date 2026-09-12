@@ -199,18 +199,28 @@ function ChatView({userId,friends,ws,events,locked}:{userId:number;friends:any[]
    refresh();
    const timer=setInterval(async()=>{
      if(cancelled||!f)return;
-     if(ws.current?.readyState===1){setStatus('Онлайн');return;}
      try{
        const d=await api('/api/messages/'+f.user_id);
        if(cancelled)return;
+       let changed=false;
        setM(cur=>{
          const byId=new Map(cur.map((x:any)=>[String(x.id),x]));
-         for(const row of (d||[])) byId.set(String(row.id),row);
+         for(const row of (d||[])){
+           const key=String(row.id);
+           const prev=byId.get(key);
+           if(!prev || prev.body!==row.body || prev.read_at!==row.read_at){ changed=true; }
+           byId.set(key,row);
+         }
          return Array.from(byId.values()).sort((a:any,b:any)=>Number(a.id)-Number(b.id)).slice(-120);
        });
-       setStatus('Резервное соединение');
+       setStatus(ws.current?.readyState===1?'Онлайн':'Живое обновление');
+       const unread=(d||[]).filter((x:any)=>Number(x.sender_id)===Number(f.user_id)&&!x.read_at).map((x:any)=>x.id);
+       if(unread.length){
+         await api('/api/messages/'+f.user_id+'/read',{method:'POST'}).catch(()=>{});
+         if(ws.current?.readyState===1) ws.current.send(JSON.stringify({type:'read',messageIds:unread}));
+       }
      }catch(e:any){ if(!cancelled)setStatus(e?.message==='CHAT_LOCKED'?'Чат закрыт':'Нет связи'); }
-   },2500);
+   },1000);
    return()=>{cancelled=true;clearInterval(timer)};
  },[f,locked]);
  useEffect(()=>{if(locked)return;for(const ev of events.slice(-6)){if(ev.type==='read'){const ids=new Set((ev.messageIds||[]).map(Number));setM(cur=>cur.map(x=>ids.has(Number(x.id))?{...x,read_at:new Date().toISOString()}:x));}else if(ev.type==='presence'){window.dispatchEvent(new CustomEvent('orbitdesk:presence',{detail:ev}))}else if(ev.type==='chat'){const msg=ev;if(Number(msg.sender_id)===Number(f?.user_id)&&Number(msg.recipient_id)===Number(userId)){setM(cur=>cur.some(x=>x.id===msg.id)?cur:[...cur,msg]);api('/api/messages/'+f.user_id+'/read',{method:'POST'}).catch(()=>{});if(ws.current?.readyState===1)ws.current.send(JSON.stringify({type:'read',messageIds:[msg.id]}));}}}},[events,locked,f,userId]);
@@ -221,9 +231,8 @@ function ChatView({userId,friends,ws,events,locked}:{userId:number;friends:any[]
  async function send(){
    if(locked||!f||!text.trim()) return;
    const body=text.trim(); setText('');
-   if(ws.current?.readyState===1){ ws.current.send(JSON.stringify({type:'chat',to:f.user_id,body})); setStatus('Онлайн'); return; }
    try{
-     setStatus('Отправляем…');
+     setStatus(ws.current?.readyState===1?'Отправляем мгновенно…':'Отправляем…');
      const d=await api('/api/messages/'+f.user_id,{method:'POST',body:JSON.stringify({body})});
      if(d?.message) setM(cur=>cur.some(x=>Number(x.id)===Number(d.message.id))?cur:[...cur,d.message]);
      setStatus('Онлайн');
