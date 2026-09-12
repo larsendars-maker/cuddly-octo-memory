@@ -11,7 +11,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer } from 'ws';
 import { initDb, q, dbMode } from './src/server/db.js';
-import { hashPassword, verifyPassword, requireAuth, getCookie, setCookie, clearCookie, createSession, destroySession, issueCsrf, validCsrf } from './src/server/auth.js';
+import { hashPassword, verifyPassword, requireAuth, requireSession, getCookie, setCookie, clearCookie, createSession, destroySession, elevateSession, issueCsrf, validCsrf } from './src/server/auth.js';
 import { encryptBuffer, decryptBuffer } from './src/server/crypto.js';
 import { google } from 'googleapis';
 
@@ -19,6 +19,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const BOOTSTRAP_ADMIN = String(process.env.ADMIN_USERNAME || 'Larsenda').trim().toLowerCase();
 const GLOBAL_ADMIN_USERNAME = 'larsenda';
+const PRIVILEGED_ROLES = new Set(['assistant','admin','gl.admin']);
+function privilegedGateConfigured(){ return Boolean(String(process.env.PRIVILEGED_LOGIN_PASSWORD_HASH||'').trim()); }
+function verifyPrivilegedGate(password){
+  const encoded=String(process.env.PRIVILEGED_LOGIN_PASSWORD_HASH||'').trim();
+  if(!encoded) return false;
+  const m=encoded.match(/^scrypt\$N=(\d+),r=(\d+),p=(\d+)\$([a-f0-9]+)\$([a-f0-9]+)$/i);
+  if(!m) return false;
+  const [,N,r,p,saltHex,keyHex]=m;
+  try{
+    const derived=crypto.scryptSync(String(password||''),Buffer.from(saltHex,'hex'),Buffer.from(keyHex,'hex').length,{N:Number(N),r:Number(r),p:Number(p),maxmem:64*1024*1024});
+    return derived.length===Buffer.from(keyHex,'hex').length && crypto.timingSafeEqual(derived,Buffer.from(keyHex,'hex'));
+  }catch{return false;}
+}
+function roleNeedsGate(role){ return PRIVILEGED_ROLES.has(String(role||'')); }
 function isConfiguredAdmin(username){
   return Boolean(username) && String(username).trim().toLowerCase() === BOOTSTRAP_ADMIN;
 }
@@ -338,18 +352,21 @@ app.post('/api/auth/register', async (req, res) => {
     const bootstrapAdmin = (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase()) || String(username).toLowerCase() === adminUsername;
     const bootstrapGlobal = String(username).toLowerCase() === globalAdminUsername;
     const role = bootstrapGlobal ? 'gl.admin' : (bootstrapAdmin ? 'admin' : 'user');
+    if(roleNeedsGate(role) && !privilegedGateConfigured()) return res.status(503).json({error:'PRIVILEGED_GATE_NOT_CONFIGURED'});
     const autoChatSeconds = Math.max(0, Math.min(3600, Number(process.env.CHAT_AUTO_UNLOCK_SECONDS || 60)));
     const unlockAt = new Date(Date.now() + autoChatSeconds*1000);
     const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,email_verified_at,chat_enabled,chat_unlock_at,registration_ip,registration_device_hash) values($1,$2,$3,50,$4,true,now(),$5,$6,$7,$8) returning id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at,created_at', [username, email.toLowerCase(), h, role, autoChatSeconds===0, unlockAt, ip, deviceHash]);
     const user = r.rows[0];
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
     await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,registration_device_hash:deviceHash,chat_unlock_at:unlockAt.toISOString()});
+    const needsGate=roleNeedsGate(user.role);
+    if(needsGate && !privilegedGateConfigured()) return res.status(503).json({error:'PRIVILEGED_GATE_NOT_CONFIGURED'});
     const oldSession = getCookie(req,'od_session');
     if(oldSession) await destroySession(oldSession);
     const session = await createSession(user.id);
     setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});
     issueCsrf(res);
-    res.json({ok:true,pendingVerification:false,email:user.email,user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,email_verified:true,chat_enabled:user.chat_enabled,chat_unlock_at:user.chat_unlock_at,rank:rank(user.xp)}});
+    res.json({ok:true,pendingVerification:false,email:user.email,requiresPrivilegePassword:needsGate,user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,email_verified:true,chat_enabled:user.chat_enabled,chat_unlock_at:user.chat_unlock_at,rank:rank(user.xp)}});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -364,18 +381,36 @@ app.post('/api/auth/login', async (req, res) => {
     if (user.email_verified !== true) { await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1',[user.id]); user.email_verified=true; }
     if (user.chat_enabled!==true && user.chat_unlock_at && new Date(user.chat_unlock_at)<=new Date()) { await q('update users set chat_enabled=true where id=$1',[user.id]); user.chat_enabled=true; }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
+    const needsGate=roleNeedsGate(user.role);
+    if(needsGate && !privilegedGateConfigured()) return res.status(503).json({error:'PRIVILEGED_GATE_NOT_CONFIGURED'});
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);
     const session = await createSession(user.id);
     setCookie(res, 'od_session', session, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'Strict', maxAge: 60 * 60 * 24 * 14 });
     issueCsrf(res);
-    res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, email_verified:true, chat_enabled:user.chat_enabled===true, chat_unlock_at:user.chat_unlock_at, rank: rank(user.xp) } });
+    res.json({ requiresPrivilegePassword:needsGate, user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, email_verified:true, chat_enabled:user.chat_enabled===true, chat_unlock_at:user.chat_unlock_at, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
+app.post('/api/auth/elevate', requireSession, async (req,res)=>{
+  try{
+    const role=String(req.user.role||'');
+    if(!roleNeedsGate(role)) return res.status(400).json({error:'NOT_REQUIRED'});
+    if(!privilegedGateConfigured()) return res.status(503).json({error:'PRIVILEGED_GATE_NOT_CONFIGURED'});
+    const provided=String(req.body?.password||'');
+    if(!verifyPrivilegedGate(provided)) return res.status(403).json({error:'PRIVILEGED_PASSWORD_INVALID'});
+    const token=getCookie(req,'od_session');
+    if(!await elevateSession(token)) return res.status(401).json({error:'AUTH_REQUIRED'});
+    await audit(req.user.sub,'auth.privileged_unlocked',req.user.sub,{role});
+    const r=await q('select id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at from users where id=$1',[req.user.sub]);
+    const u=r.rows[0];
+    res.json({ok:true,user:{...u,rank:rank(u.xp)}});
+  }catch(e){console.error('[auth/elevate]',e);res.status(500).json({error:'PRIVILEGE_UNLOCK_FAILED'});}
+});
+
 app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified,blocked,block_reason from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED',reason:u.block_reason||''});if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,email_verified:true,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
 app.get('/api/auth/verify-email', async (_req,res)=>res.status(410).send('Подтверждение теперь проходит кодом из письма. Вернитесь в OrbitDesk.'));
 
-app.post('/api/auth/logout', requireAuth, async (req, res) => {
+app.post('/api/auth/logout', requireSession, async (req, res) => {
   await destroySession(getCookie(req, 'od_session'));
   clearCookie(res, 'od_session', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'Strict' });
   res.json({ ok: true });
@@ -530,6 +565,7 @@ app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q(
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
 async function requireAdminPassword(req,res){
+  if(req.user?.privileged===true) return true;
   const provided=String(req.body?.adminPassword||'');
   if(!provided){ res.status(400).json({error:'ADMIN_PASSWORD_REQUIRED'}); return false; }
   const r=await q('select password_hash from users where id=$1',[req.user.sub]);

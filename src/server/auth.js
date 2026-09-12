@@ -49,11 +49,23 @@ export function issueCsrf(res) {
   return token;
 }
 
-export async function createSession(userId) {
+export async function createSession(userId, { privileged = false } = {}) {
   const token = crypto.randomBytes(32).toString('base64url');
   const digest = hashToken(token);
-  await q(`insert into sessions(token_hash,user_id,expires_at) values($1,$2,now()+$3::interval)`, [digest, userId, `${SESSION_DAYS} days`]);
+  await q(`insert into sessions(token_hash,user_id,expires_at,privileged_at) values($1,$2,now()+$3::interval,$4)`, [digest, userId, `${SESSION_DAYS} days`, privileged ? new Date().toISOString() : null]);
   return token;
+}
+
+export async function elevateSession(token) {
+  if (!token) return false;
+  const r = await q('update sessions set privileged_at=now() where token_hash=$1 and expires_at>now() returning id', [hashToken(token)]);
+  return Boolean(r.rowCount);
+}
+
+export async function clearPrivilege(token) {
+  if (!token) return false;
+  const r = await q('update sessions set privileged_at=null where token_hash=$1 returning id', [hashToken(token)]);
+  return Boolean(r.rowCount);
 }
 
 export async function destroySession(token) {
@@ -63,7 +75,7 @@ export async function destroySession(token) {
 
 export async function sessionUser(token) {
   if (!token) return null;
-  const r = await q(`select u.id,u.username,u.email,u.xp,u.role,u.email_verified,u.email_verified_at,u.created_at,u.blocked,u.block_reason
+  const r = await q(`select u.id,u.username,u.email,u.xp,u.role,u.email_verified,u.email_verified_at,u.created_at,u.blocked,u.block_reason,s.privileged_at
                      from sessions s join users u on u.id=s.user_id
                      where s.token_hash=$1 and s.expires_at>now()`, [hashToken(token)]);
   if (!r.rowCount) return null;
@@ -71,12 +83,30 @@ export async function sessionUser(token) {
   return r.rows[0];
 }
 
+export async function requireSession(req, res, next) {
+  try {
+    const token = getCookie(req, 'od_session');
+    const user = await sessionUser(token);
+    if (!user) return res.status(401).json({ error: 'AUTH_REQUIRED' });
+    req.user = { sub: user.id, id: user.id, username: user.username, role: user.role, xp: user.xp, privileged: Boolean(user.privileged_at) };
+    next();
+  } catch (err) {
+    console.error('[auth]', err?.message || err);
+    res.status(500).json({ error: 'AUTH_CHECK_FAILED' });
+  }
+}
+
+function privilegedRole(role) { return role === 'assistant' || role === 'admin' || role === 'gl.admin'; }
+
 export async function requireAuth(req, res, next) {
   try {
     const token = getCookie(req, 'od_session');
     const user = await sessionUser(token);
     if (!user) return res.status(401).json({ error: 'AUTH_REQUIRED' });
-    req.user = { sub: user.id, id: user.id, username: user.username, role: user.role, xp: user.xp };
+    if (privilegedRole(user.role) && !user.privileged_at) {
+      return res.status(403).json({ error: 'PRIVILEGE_REQUIRED', user: { id:user.id, username:user.username, email:user.email, xp:user.xp, role:user.role, email_verified:user.email_verified, chat_enabled:true, rank:{name:'',xp:user.xp} } });
+    }
+    req.user = { sub: user.id, id: user.id, username: user.username, role: user.role, xp: user.xp, privileged: true };
     next();
   } catch (err) {
     console.error('[auth]', err?.message || err);
