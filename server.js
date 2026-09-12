@@ -22,6 +22,9 @@ const GLOBAL_ADMIN_USERNAME = String(process.env.GLOBAL_ADMIN_USERNAME || 'Larse
 function isConfiguredAdmin(username){
   return Boolean(username) && String(username).trim().toLowerCase() === BOOTSTRAP_ADMIN;
 }
+function isGlobalAdmin(username){
+  return Boolean(username) && String(username).trim().toLowerCase() === GLOBAL_ADMIN_USERNAME;
+}
 function sha256(v){ return crypto.createHash('sha256').update(v).digest('hex'); }
 function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(v).toString('base64'); }
 function unb64(v){ return Buffer.from(v, 'base64'); }
@@ -155,6 +158,8 @@ app.set('trust proxy', 1);
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const sockets = new Map();
+function friendPeerIds(userId){ return q(`select case when requester_id=$1 then addressee_id else requester_id end as user_id from friendships where status='accepted' and (requester_id=$1 or addressee_id=$1)`,[userId]).then(r=>r.rows.map(x=>Number(x.user_id))).catch(()=>[]); }
+async function broadcastPresence(userId,online){ const peers=await friendPeerIds(userId); for(const id of peers){ const peer=sockets.get(id); if(peer) send(peer,{type:'presence',userId:Number(userId),online}); } }
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
 const securityHeaders = helmet({
@@ -370,7 +375,7 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
-app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified,blocked,block_reason from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED',reason:u.block_reason||''});if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
+app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified,blocked,block_reason from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED',reason:u.block_reason||''});if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,email_verified:true,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
 app.get('/api/auth/verify-email', async (_req,res)=>res.status(410).send('Подтверждение теперь проходит кодом из письма. Вернитесь в OrbitDesk.'));
 
 app.post('/api/auth/logout', requireAuth, async (req, res) => {
@@ -398,6 +403,18 @@ app.post('/api/auth/resend-code', async (req,res)=>{try{
 
 app.post('/api/email/resend', requireAuth, async (req,res)=>{const r=await q('select id,email,email_verified from users where id=$1',[req.user.sub]);if(!r.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});if(r.rows[0].email_verified)return res.json({ok:true,alreadyVerified:true});await sendVerificationEmail({id:r.rows[0].id,email:r.rows[0].email},'resend');res.json({ok:true});});
 
+app.post('/api/profile/avatar', requireAuth, upload.single('photo'), async (req,res)=>{
+  const file=req.file;
+  if(!file) return res.status(400).json({error:'PHOTO_REQUIRED'});
+  if(!/^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.mimetype)) return res.status(400).json({error:'UNSUPPORTED_PHOTO'});
+  if(file.size>2*1024*1024) return res.status(413).json({error:'PHOTO_TOO_LARGE'});
+  const payload=await q('select payload from user_settings where user_id=$1',[req.user.sub]);
+  const current=normalizeSettings(payload.rows[0]?.payload||{});
+  const avatar=`data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+  await q(`insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do update set payload=$2,updated_at=now()`,[req.user.sub,{...current,avatarUrl:avatar}]);
+  await audit(req.user.sub,'profile.avatar_upload',req.user.sub,{mime:file.mimetype,size:file.size});
+  res.json({ok:true,avatarUrl:avatar});
+});
 app.get('/api/settings', requireAuth, async (req, res) => {
   const r = await q('select payload from user_settings where user_id=$1', [req.user.sub]);
   res.json(normalizeSettings(r.rows[0]?.payload || {}));
@@ -487,6 +504,15 @@ app.post('/api/tables', requireAuth, async (req, res) => { const name = String(r
 app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q('update tables_data set name=$1,payload=$2,updated_at=now() where id=$3 and user_id=$4 returning *', [String(req.body?.name || 'Таблица').slice(0, 120), req.body?.payload || {}, req.params.id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(r.rows[0]); });
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
+async function requireAdminPassword(req,res){
+  const provided=String(req.body?.adminPassword||'');
+  if(!provided){ res.status(400).json({error:'ADMIN_PASSWORD_REQUIRED'}); return false; }
+  const r=await q('select password_hash from users where id=$1',[req.user.sub]);
+  if(!r.rowCount || !(await verifyPassword(provided,r.rows[0].password_hash))){
+    res.status(403).json({error:'ADMIN_PASSWORD_INVALID'}); return false;
+  }
+  return true;
+}
 async function requireRole(req,res,roles){ const u=await q('select role,username from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; const effective=isGlobalAdmin(u.rows[0]?.username)?'gl.admin':(isConfiguredAdmin(u.rows[0]?.username)?'admin':role); const allowed=roles.includes(effective)||(effective==='gl.admin'&&roles.includes('admin')); if(!allowed) { res.status(403).json({error:'FORBIDDEN'}); return null; } return effective; }
 
 app.get('/api/admin/mail/status', requireAuth, async (req,res)=>{
@@ -518,10 +544,34 @@ app.post('/api/admin/mail/test', requireAuth, async (req,res)=>{
 });
 
 app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username,u.email from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
-app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username,u.email from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit 1000'); res.json(r.rows); });
+app.get('/api/admin/audit', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  const action=String(req.query.action||'').trim(); const actor=String(req.query.actor||'').trim().toLowerCase(); const limit=Math.max(20,Math.min(500,Number(req.query.limit||250)));
+  const where=[]; const params=[]; let n=0;
+  if(action){params.push(action); where.push(`a.action=$${++n}`);}
+  if(actor){params.push(`%${actor}%`); where.push(`lower(coalesce(u.username,'')) like $${++n}`);}
+  const sql=`select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username,u.email from audit_logs a left join users u on u.id=a.actor_id ${where.length?'where '+where.join(' and '):''} order by a.created_at desc limit ${limit}`;
+  const r=await q(sql,params); res.json(r.rows);
+});
 
-app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))); });
-app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['gl.admin','admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const targetId=Number(req.params.id); const tr=await q('select username from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(!['gl.admin','admin'].includes(role) && (isConfiguredAdmin(tr.rows[0].username)||isGlobalAdmin(tr.rows[0].username))) return res.status(400).json({error:'ADMIN_CONFIGURED_IN_FILE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]); await audit(req.user.sub,'admin.role_change',targetId,{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)}); });
+app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at,last_seen_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,online:sockets.has(Number(x.id)),rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))); });
+app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{
+  const actorRole=await requireRole(req,res,['admin']); if(!actorRole) return;
+  if(!(await requireAdminPassword(req,res))) return;
+  const role=String(req.body?.role||'user');
+  if(!['gl.admin','admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'});
+  const targetId=Number(req.params.id);
+  const tr=await q('select id,username,role from users where id=$1',[targetId]);
+  if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'});
+  const target=tr.rows[0];
+  if(isGlobalAdmin(target.username)) return res.status(403).json({error:'GLOBAL_ADMIN_PROTECTED'});
+  if(isConfiguredAdmin(target.username)) return res.status(403).json({error:'MAIN_ADMIN_PROTECTED'});
+  if(['admin','gl.admin'].includes(target.role) && actorRole!=='gl.admin') return res.status(403).json({error:'ADMIN_CANNOT_MANAGE_ADMIN'});
+  if(role==='gl.admin' && actorRole!=='gl.admin') return res.status(403).json({error:'GLOBAL_ADMIN_ONLY'});
+  const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]);
+  await audit(req.user.sub,'admin.role_change',targetId,{role,by_role:actorRole});
+  res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)});
+});
 app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
   const xp=Math.max(0,Math.min(999999,Math.floor(Number(req.body?.xp)||0)));
@@ -530,8 +580,21 @@ app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
   await audit(req.user.sub,'admin.xp_change',Number(req.params.id),{xp});
   res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)});
 });
-app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)}); });
-app.post('/api/admin/users/:id/verify-email', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1 returning id,username,email,email_verified', [targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); await q('delete from email_verification_codes where user_id=$1',[targetId]); await audit(req.user.sub,'admin.email_verification.manual',targetId,{email:r.rows[0].email}); res.json({ok:true,...r.rows[0]}); });
+app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{
+  const actorRole=await requireRole(req,res,['admin']); if(!actorRole) return;
+  if(!(await requireAdminPassword(req,res))) return;
+  const targetId=Number(req.params.id);
+  if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'});
+  const tr=await q('select username,role from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'});
+  if(isGlobalAdmin(tr.rows[0].username)||isConfiguredAdmin(tr.rows[0].username)) return res.status(403).json({error:'ADMIN_PROTECTED'});
+  if(tr.rows[0].role==='admin' && actorRole!=='gl.admin') return res.status(403).json({error:'ADMIN_CANNOT_MANAGE_ADMIN'});
+  const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240);
+  const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]);
+  if(block) await q('delete from sessions where user_id=$1',[targetId]);
+  await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason});
+  res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)});
+});
+app.post('/api/admin/users/:id/verify-email', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; if(!(await requireAdminPassword(req,res))) return; const targetId=Number(req.params.id); const r=await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1 returning id,username,email,email_verified', [targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); await q('delete from email_verification_codes where user_id=$1',[targetId]); await audit(req.user.sub,'admin.email_verification.manual',targetId,{email:r.rows[0].email}); res.json({ok:true,...r.rows[0]}); });
 app.post('/api/admin/users/:id/resend-verification', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('select id,username,email,email_verified,blocked from users where id=$1',[targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); const u=r.rows[0]; if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED'}); if(u.email_verified)return res.json({ok:true,alreadyVerified:true}); try { await sendVerificationEmail({id:u.id,email:u.email},'resend'); await audit(req.user.sub,'admin.email_verification.resend',u.id,{email:u.email}); res.json({ok:true,email:u.email}); } catch(e){ console.error('[admin/mail/resend]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED' || e?.message==='MAIL_BRIDGE_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); } });
 app.get('/api/admin/admins', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
@@ -541,8 +604,9 @@ app.get('/api/admin/admins', requireAuth, async (req,res)=>{
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
-app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
-app.get('/api/messages/:userId', requireAuth, async (req, res) => { const me=await q('select email_verified from users where id=$1',[req.user.sub]); if(me.rows[0]?.email_verified!==true) return res.status(403).json({error:'EMAIL_NOT_VERIFIED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
+app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp,u.last_seen_at from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp), online:sockets.has(Number(x.user_id)) }))); });
+app.get('/api/messages/:userId', requireAuth, async (req, res) => { const me=await q('select email_verified from users where id=$1',[req.user.sub]); if(me.rows[0]?.email_verified!==true) return res.status(403).json({error:'EMAIL_NOT_VERIFIED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.read_at,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
+app.post('/api/messages/:userId/read', requireAuth, async (req,res)=>{ const other=Number(req.params.userId); const r=await q('update messages set read_at=coalesce(read_at,now()) where sender_id=$1 and recipient_id=$2 and read_at is null returning id',[other,req.user.sub]); const peer=sockets.get(other); if(peer && r.rowCount) send(peer,{type:'read',from:Number(req.user.sub),messageIds:r.rows.map(x=>x.id)}); res.json({ok:true,count:r.rowCount}); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });
 app.get('/api/integrations/google/config', requireAuth, async (_req,res)=>res.json({
@@ -573,23 +637,24 @@ wss.on('connection', async (ws, req) => {
     })();
     if (!user) return ws.close(1008, 'AUTH');
     if (!user.email_verified) return ws.close(1008, 'EMAIL_NOT_VERIFIED');
-    ws.userId = Number(user.id); ws.username = user.username; sockets.set(ws.userId, ws); send(ws, { type: 'ready' });
+    ws.userId = Number(user.id); ws.username = user.username; sockets.set(ws.userId, ws); await q('update users set last_seen_at=now() where id=$1',[ws.userId]); send(ws, { type: 'ready' }); await broadcastPresence(ws.userId,true);
   } catch { return ws.close(1011, 'AUTH_ERROR'); }
   ws.on('message', async raw => {
     try {
       if (raw.length > 12000) return;
       const data = JSON.parse(raw.toString());
       if (!ws.userId) return;
+      if (data.type === 'read') { const ids=Array.isArray(data.messageIds)?data.messageIds.map(Number).filter(Number.isFinite).slice(0,100):[]; if(ids.length){ const r=await q(`update messages set read_at=coalesce(read_at,now()) where id=any($1::bigint[]) and recipient_id=$2 returning id,sender_id`,[ids,ws.userId]); const grouped=new Map(); for(const row of r.rows){ const arr=grouped.get(Number(row.sender_id))||[]; arr.push(Number(row.id)); grouped.set(Number(row.sender_id),arr); } for(const [peerId,mid] of grouped){ const peer=sockets.get(peerId); if(peer) send(peer,{type:'read',from:ws.userId,messageIds:mid}); } } return; }
       if (data.type === 'chat') {
         const to = Number(data.to); const body = String(data.body || '').normalize('NFKC').trim().slice(0, 2000); if (!to || !body) return;
         const fr = await q(`select 1 from friendships where status='accepted' and ((requester_id=$1 and addressee_id=$2) or (requester_id=$2 and addressee_id=$1))`, [ws.userId, to]);
         if (!fr.rowCount) return send(ws, { type: 'error', message: 'Доступно только друзьям' });
         const r = await q('insert into messages(sender_id,recipient_id,body) values($1,$2,$3) returning id,sender_id,recipient_id,body,created_at', [ws.userId, to, body]);
-        const msg = { type: 'chat', message: r.rows[0], sender_name: ws.username }; send(ws, msg); const peer = sockets.get(to); if (peer) send(peer, msg);
+        const msg = { type: 'chat', message: {...r.rows[0],read_at:null}, sender_name: ws.username }; send(ws, msg); const peer = sockets.get(to); if (peer) send(peer, msg);
       }
     } catch { send(ws, { type: 'error', message: 'WS error' }); }
   });
-  ws.on('close', () => { if (ws.userId && sockets.get(ws.userId) === ws) sockets.delete(ws.userId); });
+  ws.on('close', async () => { if (ws.userId && sockets.get(ws.userId) === ws) { sockets.delete(ws.userId); await q('update users set last_seen_at=now() where id=$1',[ws.userId]).catch(()=>{}); await broadcastPresence(ws.userId,false); } });
 });
 setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) { ws.terminate(); continue; } ws.isAlive = false; ws.ping(); } }, 25000);
 

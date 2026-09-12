@@ -29,20 +29,20 @@ if (hasPg) {
 export const dbMode = () => memoryMode ? 'memory' : 'postgres';
 
 export async function initDb() {
-  if (!pool) return;
+  if (!pool) { if (String(process.env.REQUIRE_PERSISTENT_DB||'').toLowerCase()==='true') throw new Error('DATABASE_URL is required for persistent OrbitDesk storage.'); return; }
   await pool.query(`
     create table if not exists schema_migrations (version integer primary key, applied_at timestamptz not null default now());
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
       password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
-      email_verified boolean not null default false, email_verified_at timestamptz, registration_ip inet, registration_device_hash char(64), blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now()
+      email_verified boolean not null default false, email_verified_at timestamptz, registration_ip inet, registration_device_hash char(64), blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now(), last_seen_at timestamptz
     );
     create table if not exists user_settings (user_id integer primary key references users(id) on delete cascade, payload jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists bookmarks (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, shortcut varchar(40), icon varchar(8) not null default '🌐', category varchar(30) not null default 'custom', position integer not null default 0, created_at timestamptz not null default now());
     create table if not exists workspace_tabs (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, position integer not null default 0, created_at timestamptz not null default now());
     create table if not exists tables_data (id serial primary key, user_id integer not null references users(id) on delete cascade, name varchar(120) not null, payload jsonb not null default '{"columns":[],"rows":[]}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists friendships (id serial primary key, requester_id integer not null references users(id) on delete cascade, addressee_id integer not null references users(id) on delete cascade, status varchar(20) not null default 'pending', created_at timestamptz not null default now(), unique(requester_id, addressee_id));
-    create table if not exists messages (id bigserial primary key, sender_id integer not null references users(id) on delete cascade, recipient_id integer not null references users(id) on delete cascade, body varchar(2000) not null, created_at timestamptz not null default now());
+    create table if not exists messages (id bigserial primary key, sender_id integer not null references users(id) on delete cascade, recipient_id integer not null references users(id) on delete cascade, body varchar(2000) not null, read_at timestamptz, created_at timestamptz not null default now());
     create table if not exists sessions (id bigserial primary key, token_hash char(64) unique not null, user_id integer not null references users(id) on delete cascade, expires_at timestamptz not null, created_at timestamptz not null default now());
     create table if not exists photos (id bigserial primary key, user_id integer not null references users(id) on delete cascade, filename varchar(180) not null, mime_type varchar(80) not null, size_bytes integer not null, data bytea not null, created_at timestamptz not null default now());
 create table if not exists visits (id bigserial primary key, user_id integer not null references users(id) on delete cascade, url text not null, title varchar(200) not null default '', visited_at timestamptz not null default now());
@@ -59,6 +59,8 @@ create table if not exists visits (id bigserial primary key, user_id integer not
   await pool.query(`alter table users add column if not exists blocked boolean not null default false`);
   await pool.query(`alter table users add column if not exists block_reason varchar(240)`);
   await pool.query(`alter table users add column if not exists blocked_at timestamptz`);
+  await pool.query(`alter table users add column if not exists last_seen_at timestamptz`);
+  await pool.query(`alter table messages add column if not exists read_at timestamptz`);
   for (const v of [1]) await pool.query('insert into schema_migrations(version) values($1) on conflict(version) do nothing',[v]);
   const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
   await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
