@@ -17,15 +17,11 @@ import { google } from 'googleapis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
-const ADMIN_FILE = process.env.ADMIN_USERS_FILE || path.join(__dirname, 'admins.json');
-function loadAdminUsernames(){
-  try {
-    const raw=JSON.parse(fs.readFileSync(ADMIN_FILE,'utf8'));
-    const list=Array.isArray(raw)?raw:raw.admins;
-    return new Set((Array.isArray(list)?list:[]).map(x=>String(x).trim().toLowerCase()).filter(Boolean));
-  } catch { return new Set(['larsenda']); }
+const BOOTSTRAP_ADMIN = String(process.env.ADMIN_USERNAME || 'Larsenda').trim().toLowerCase();
+const GLOBAL_ADMIN_USERNAME = String(process.env.GLOBAL_ADMIN_USERNAME || 'Larsendars').trim().toLowerCase();
+function isConfiguredAdmin(username){
+  return Boolean(username) && String(username).trim().toLowerCase() === BOOTSTRAP_ADMIN;
 }
-function isConfiguredAdmin(username){ return loadAdminUsernames().has(String(username||'').trim().toLowerCase()); }
 function sha256(v){ return crypto.createHash('sha256').update(v).digest('hex'); }
 function b64(v){ return Buffer.isBuffer(v) ? v.toString('base64') : Buffer.from(v).toString('base64'); }
 function unb64(v){ return Buffer.from(v, 'base64'); }
@@ -247,7 +243,7 @@ function normalizeSettings(s = {}) {
 }
 
 app.get('/health', async (_req, res) => { try { await q('select 1'); res.json({ ok: true, service: 'OrbitDesk', db: dbMode() }); } catch { res.status(503).json({ ok: false, service: 'OrbitDesk', db: false }); } });
-app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(role)).sort((a,b)=>b.popularity-a.popularity).map(({roles,popularity,...x})=>x) }); });
+app.get('/api/config', requireAuth, async (req, res) => { const u = await q('select role from users where id=$1',[req.user.sub]); const role = u.rows[0]?.role || 'user'; const siteRole=role==='gl.admin'?'admin':role; res.json({ role, sites: PRESET_SITES.filter(x => x.roles.includes(siteRole)).sort((a,b)=>b.popularity-a.popularity).map(({roles,popularity,...x})=>x) }); });
 
 const PRESET_SITES = [
   {id:'google-docs',title:'Google Docs',url:'https://docs.google.com/document/',icon:'📝',category:'productivity',popularity:99,roles:['user','assistant','admin']},
@@ -271,7 +267,7 @@ app.get('/api/sites/suggest', requireAuth, async (req,res)=>{
   const qstr=String(req.query.q||'').trim().toLowerCase().slice(0,80);
   const roleRow=await q('select role from users where id=$1',[req.user.sub]);
   const role=roleRow.rows[0]?.role||'user';
-  const base=PRESET_SITES.filter(x=>x.roles.includes(role)).map(x=>({...x,score:x.popularity,uses:0}));
+  const base=PRESET_SITES.filter(x=>x.roles.includes(role==='gl.admin'?'admin':role)).map(x=>({...x,score:x.popularity,uses:0}));
   const [bm,vis]=await Promise.all([
     q('select id,title,url,shortcut,icon,category from bookmarks where user_id=$1 order by position,id',[req.user.sub]),
     q('select id,url,title,visited_at from visits where user_id=$1 order by visited_at desc limit 500',[req.user.sub])
@@ -333,8 +329,10 @@ app.post('/api/auth/register', async (req, res) => {
     }
     const h = await hashPassword(password);
     const adminUsername = (process.env.ADMIN_USERNAME || 'Larsenda').toLowerCase();
+    const globalAdminUsername = (process.env.GLOBAL_ADMIN_USERNAME || 'Larsendars').toLowerCase();
     const bootstrapAdmin = (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase()) || String(username).toLowerCase() === adminUsername;
-    const role = bootstrapAdmin ? 'admin' : 'user';
+    const bootstrapGlobal = String(username).toLowerCase() === globalAdminUsername;
+    const role = bootstrapGlobal ? 'gl.admin' : (bootstrapAdmin ? 'admin' : 'user');
     const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,registration_ip,registration_device_hash) values($1,$2,$3,50,$4,false,$5,$6) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role, ip, deviceHash]);
     const user = r.rows[0];
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
@@ -346,7 +344,12 @@ app.post('/api/auth/register', async (req, res) => {
       console.warn('[mail/register] verification mail unavailable; account remains pending for admin approval', mailError?.message || mailError);
     }
     await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,registration_device_hash:deviceHash,verification_required:true,mail_queued:mailQueued});
-    res.json({ok:true,pendingVerification:true,email:user.email,mailQueued,adminApprovalRequired:true});
+    const oldSession = getCookie(req,'od_session');
+    if(oldSession) await destroySession(oldSession);
+    const session = await createSession(user.id);
+    setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});
+    issueCsrf(res);
+    res.json({ok:true,pendingVerification:true,email:user.email,mailQueued,adminApprovalRequired:true,user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,email_verified:false,rank:rank(user.xp)}});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -357,8 +360,7 @@ app.post('/api/auth/login', async (req, res) => {
     const user = r.rows[0];
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (user.blocked) return res.status(403).json({ error: 'ACCOUNT_BLOCKED', reason: user.block_reason || '' });
-    if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
-    if (!user.email_verified) return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email: user.email, adminApprovalRequired: true });
+    if (isGlobalAdmin(user.username) && user.role !== 'gl.admin') { await q("update users set role='gl.admin' where id=$1",[user.id]); user.role='gl.admin'; } else if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);
@@ -485,7 +487,7 @@ app.post('/api/tables', requireAuth, async (req, res) => { const name = String(r
 app.put('/api/tables/:id', requireAuth, async (req, res) => { const r = await q('update tables_data set name=$1,payload=$2,updated_at=now() where id=$3 and user_id=$4 returning *', [String(req.body?.name || 'Таблица').slice(0, 120), req.body?.payload || {}, req.params.id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(r.rows[0]); });
 app.delete('/api/tables/:id', requireAuth, async (req, res) => { await q('delete from tables_data where id=$1 and user_id=$2', [req.params.id, req.user.sub]); res.json({ ok: true }); });
 
-async function requireRole(req,res,roles){ const u=await q('select role,username from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; const effective=isConfiguredAdmin(u.rows[0]?.username)?'admin':role; if(!roles.includes(effective)) { res.status(403).json({error:'FORBIDDEN'}); return null; } return effective; }
+async function requireRole(req,res,roles){ const u=await q('select role,username from users where id=$1',[req.user.sub]); const role=u.rows[0]?.role||'user'; const effective=isGlobalAdmin(u.rows[0]?.username)?'gl.admin':(isConfiguredAdmin(u.rows[0]?.username)?'admin':role); const allowed=roles.includes(effective)||(effective==='gl.admin'&&roles.includes('admin')); if(!allowed) { res.status(403).json({error:'FORBIDDEN'}); return null; } return effective; }
 
 app.get('/api/admin/mail/status', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
@@ -518,25 +520,29 @@ app.post('/api/admin/mail/test', requireAuth, async (req,res)=>{
 app.get('/api/admin/history', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select v.id,v.url,v.title,v.visited_at,u.username,u.email from visits v join users u on u.id=v.user_id order by v.visited_at desc limit 1000'); res.json(r.rows); });
 app.get('/api/admin/audit', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select a.id,a.action,a.target_id,a.metadata,a.created_at,u.username,u.email from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit 1000'); res.json(r.rows); });
 
-app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)}))); });
-app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const targetId=Number(req.params.id); const tr=await q('select username from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(role!=='admin' && isConfiguredAdmin(tr.rows[0].username)) return res.status(400).json({error:'ADMIN_CONFIGURED_IN_FILE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]); await audit(req.user.sub,'admin.role_change',targetId,{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))); });
+app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const role=String(req.body?.role||'user'); if(!['gl.admin','admin','assistant','user'].includes(role)) return res.status(400).json({error:'BAD_ROLE'}); const targetId=Number(req.params.id); const tr=await q('select username from users where id=$1',[targetId]); if(!tr.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(!['gl.admin','admin'].includes(role) && (isConfiguredAdmin(tr.rows[0].username)||isGlobalAdmin(tr.rows[0].username))) return res.status(400).json({error:'ADMIN_CONFIGURED_IN_FILE'}); const r=await q('update users set role=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at', [role,targetId]); await audit(req.user.sub,'admin.role_change',targetId,{role}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)}); });
 app.put('/api/admin/users/:id/xp', requireAuth, async (req,res)=>{
   if(!(await requireRole(req,res,['admin']))) return;
   const xp=Math.max(0,Math.min(999999,Math.floor(Number(req.body?.xp)||0)));
   const r=await q('update users set xp=$1 where id=$2 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[xp,Number(req.params.id)]);
   if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'});
   await audit(req.user.sub,'admin.xp_change',Number(req.params.id),{xp});
-  res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)});
+  res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)});
 });
-app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)}); });
+app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); if(targetId===Number(req.user.sub)) return res.status(400).json({error:'CANNOT_BLOCK_SELF'}); const block=req.body?.blocked!==false; const reason=String(req.body?.reason||'Без указания причины').slice(0,240); const r=await q('update users set blocked=$1,block_reason=$2,blocked_at=case when $1 then now() else null end where id=$3 returning id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at',[block,reason,targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); if(block) await q('delete from sessions where user_id=$1',[targetId]); await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason}); res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)}); });
 app.post('/api/admin/users/:id/verify-email', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1 returning id,username,email,email_verified', [targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); await q('delete from email_verification_codes where user_id=$1',[targetId]); await audit(req.user.sub,'admin.email_verification.manual',targetId,{email:r.rows[0].email}); res.json({ok:true,...r.rows[0]}); });
 app.post('/api/admin/users/:id/resend-verification', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('select id,username,email,email_verified,blocked from users where id=$1',[targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); const u=r.rows[0]; if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED'}); if(u.email_verified)return res.json({ok:true,alreadyVerified:true}); try { await sendVerificationEmail({id:u.id,email:u.email},'resend'); await audit(req.user.sub,'admin.email_verification.resend',u.id,{email:u.email}); res.json({ok:true,email:u.email}); } catch(e){ console.error('[admin/mail/resend]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED' || e?.message==='MAIL_BRIDGE_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); } });
-app.get('/api/admin/admins', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; res.json({file:ADMIN_FILE,admins:[...loadAdminUsernames()]}); });
+app.get('/api/admin/admins', requireAuth, async (req,res)=>{
+  if(!(await requireRole(req,res,['admin']))) return;
+  const r=await q('select id,username,email,role,email_verified,blocked,created_at from users where role in (\'admin\',\'gl.admin\') order by lower(username)');
+  res.json({admins:r.rows.map(x=>({...x,configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))});
+});
 app.post('/api/friends/request', requireAuth, async (req, res) => { const to = Number(req.body?.userId); if (!to || to === Number(req.user.sub)) return res.status(400).json({ error: 'BAD_USER' }); try { const r = await q("insert into friendships(requester_id,addressee_id,status) values($1,$2,'pending') on conflict(requester_id,addressee_id) do nothing returning *", [req.user.sub, to]); res.json({ ok: true, created: Boolean(r.rowCount) }); } catch { res.status(400).json({ error: 'REQUEST_FAILED' }); } });
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
 app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
-app.get('/api/messages/:userId', requireAuth, async (req, res) => { const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
+app.get('/api/messages/:userId', requireAuth, async (req, res) => { const me=await q('select email_verified from users where id=$1',[req.user.sub]); if(me.rows[0]?.email_verified!==true) return res.status(403).json({error:'EMAIL_NOT_VERIFIED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });
 app.get('/api/integrations/google/config', requireAuth, async (_req,res)=>res.json({
@@ -566,6 +572,7 @@ wss.on('connection', async (ws, req) => {
       return sessionUser(token);
     })();
     if (!user) return ws.close(1008, 'AUTH');
+    if (!user.email_verified) return ws.close(1008, 'EMAIL_NOT_VERIFIED');
     ws.userId = Number(user.id); ws.username = user.username; sockets.set(ws.userId, ws); send(ws, { type: 'ready' });
   } catch { return ws.close(1011, 'AUTH_ERROR'); }
   ws.on('message', async raw => {

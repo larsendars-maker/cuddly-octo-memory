@@ -62,16 +62,8 @@ create table if not exists visits (id bigserial primary key, user_id integer not
   for (const v of [1]) await pool.query('insert into schema_migrations(version) values($1) on conflict(version) do nothing',[v]);
   const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
   await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
-  try {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { fileURLToPath } = await import('node:url');
-    const root = path.dirname(fileURLToPath(import.meta.url));
-    const file = process.env.ADMIN_USERS_FILE || path.join(root, '..', '..', 'admins.json');
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const admins = Array.isArray(data) ? data : data.admins;
-    if (Array.isArray(admins)) for (const name of admins.map(x=>String(x).trim()).filter(Boolean)) await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [name]);
-  } catch {}
+  const globalAdminName=String(process.env.GLOBAL_ADMIN_USERNAME||'Larsendars').trim();
+  await pool.query(`update users set role='gl.admin' where lower(username)=lower($1)`, [globalAdminName]);
   for (const sql of [
     `create index if not exists sessions_user_idx on sessions(user_id)`,
     `create index if not exists sessions_expires_idx on sessions(expires_at)`,
@@ -94,7 +86,7 @@ create table if not exists visits (id bigserial primary key, user_id integer not
   await pool.query(`alter table bookmarks add column if not exists category varchar(30) not null default 'custom'`);
   await pool.query(`alter table bookmarks add column if not exists shortcut varchar(40)`);
   await pool.query(`alter table bookmarks add column if not exists position integer not null default 0`);
-  await pool.query(`update users set role='user' where role is null or role not in ('admin','assistant','user')`);
+  await pool.query(`update users set role='user' where role is null or role not in ('gl.admin','admin','assistant','user')`);
   if (process.env.BOOTSTRAP_ADMIN_EMAIL) await pool.query(`update users set role='admin' where lower(email)=lower($1)`, [process.env.BOOTSTRAP_ADMIN_EMAIL]);
 }
 

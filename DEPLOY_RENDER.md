@@ -41,7 +41,6 @@ Do not put DATABASE_URL, SMTP_PASS, GOOGLE_CLIENT_SECRET or encryption keys in G
 Keep the same Render Postgres database resource connected to the service. Application deploys do not delete relational data; schema changes use CREATE IF NOT EXISTS / ALTER IF NOT EXISTS and a schema_migrations table. Do not delete/recreate the Postgres resource. On Render Free Postgres, the database itself expires after 30 days; use a paid Postgres plan for long-term production persistence and backups.
 
 ## Администраторы и блокировки (v16)
-- `admins.json` находится в корне проекта. Добавляй туда ники администраторов. После изменения нужен новый deploy.
 - В админ-панели появилась вкладка «Аккаунты»: логин, email, дата создания, подтверждение email, роль и блокировка.
 - Блокировка удаляет активные сессии пользователя и не даёт войти.
 - В «Журнале» фиксируется создание аккаунта с логином/email, подтверждение email, изменения ролей и блокировки.

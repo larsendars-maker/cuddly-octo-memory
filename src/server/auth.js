@@ -68,7 +68,6 @@ export async function sessionUser(token) {
                      where s.token_hash=$1 and s.expires_at>now()`, [hashToken(token)]);
   if (!r.rowCount) return null;
   if (r.rows[0].blocked) return null;
-  if (String(process.env.REQUIRE_EMAIL_VERIFICATION || 'true') !== 'false' && r.rows[0].email_verified === false) return null;
   return r.rows[0];
 }
 
