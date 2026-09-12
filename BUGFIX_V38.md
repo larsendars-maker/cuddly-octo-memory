@@ -1,7 +1,7 @@
 # OrbitDesk v38
 
 - `.env.example` исправлен: `REQUIRE_EMAIL_VERIFICATION=true`.
-- Старый `MAX_ACCOUNTS_PER_IP` заменён примером на фактически используемый `MAX_ACCOUNTS_TOTAL=2`.
+- Лимит регистраций теперь задаётся через `MAX_ACCOUNTS_PER_DEVICE=2`: максимум два аккаунта для одного постоянного идентификатора браузера/устройства.
 - Версия проекта: 2.6.0.
 - Добавлена инструкция по Private GitHub + Protected Render Environment.
 - Реальные секреты по-прежнему не хранятся в исходниках.

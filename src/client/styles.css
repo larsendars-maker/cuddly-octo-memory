@@ -888,3 +888,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   .hero h1{font-size:29px}
   .site-card{min-height:72px}
 }
+
+
+/* Bot honeypot: accessible to form-fillers but invisible to normal users. */
+.bot-trap{position:absolute!important;left:-10000px!important;top:auto!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;}
+.bot-trap input{position:absolute!important;left:-10000px!important;width:1px!important;height:1px!important;}

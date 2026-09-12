@@ -180,7 +180,10 @@ const securityHeaders = helmet({
   crossOriginOpenerPolicy: { policy: 'same-origin' },
   crossOriginResourcePolicy: { policy: 'same-origin' },
   referrerPolicy: { policy: 'no-referrer' },
-  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true }
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  permissionsPolicy: {
+    features: { camera: [], microphone: [], geolocation: [], payment: [], usb: [] }
+  }
 });
 app.use(securityHeaders);
 app.use((req,res,next)=>{ res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
@@ -194,12 +197,13 @@ app.use((req,res,next)=>{
   next();
 });
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 25, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
+const registrationLimiter = rateLimit({ windowMs: 30 * 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
 const verificationLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false, handler: (_req,res)=>res.status(429).json({error:'RATE_LIMITED'}) });
-const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false });
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false });
 app.use('/api', apiLimiter);
 app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/register', registrationLimiter);
 app.use('/api/auth/verify-code', verificationLimiter);
 app.use('/api/auth/resend-code', verificationLimiter);
 app.use('/api/email/resend', verificationLimiter);
@@ -288,14 +292,38 @@ app.post('/api/sites/add', requireAuth, async (req,res)=>{
 
 app.get('/api/auth/mail-status', (_req,res)=>res.json(mailStatus()));
 
+const BLOCK_AUTOMATION_USER_AGENTS = String(process.env.BLOCK_AUTOMATION_USER_AGENTS ?? 'true').toLowerCase() !== 'false';
+const REGISTRATION_MIN_MS = 1800;
+const REGISTRATION_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+function looksAutomated(req){
+  if(!BLOCK_AUTOMATION_USER_AGENTS) return false;
+  const ua=String(req.headers['user-agent']||'').toLowerCase();
+  return /headless|phantomjs|selenium|playwright|puppeteer|python-requests|python-urllib|curl\/|wget\/|scrapy|httpclient/.test(ua);
+}
+function registrationBotCheck(req){
+  const body=req.body||{};
+  if(String(body.website||'').trim()) return 'BOT_DETECTED';
+  const started=Number(body.formStartedAt);
+  if(!Number.isFinite(started)) return 'BOT_DETECTED';
+  const elapsed=Date.now()-started;
+  if(elapsed < REGISTRATION_MIN_MS) return 'REGISTRATION_TOO_FAST';
+  if(elapsed > REGISTRATION_MAX_AGE_MS) return 'REGISTRATION_FORM_EXPIRED';
+  if(looksAutomated(req)) return 'BOT_DETECTED';
+  return null;
+}
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
+    const botError = registrationBotCheck(req);
+    if (botError) return res.status(400).json({ error: botError });
     if (!/^[A-Za-z0-9_]{3,32}$/.test(username || '')) return res.status(400).json({ error: 'BAD_USERNAME' });
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
     const ip = clientIp(req);
     const deviceId = getOrCreateDeviceId(req, res);
+    const recentIpRegistrations = await q("select count(*)::int as count from users where registration_ip=$1 and created_at > now() - interval '24 hours'", [ip]);
+    if (Number(recentIpRegistrations.rows[0]?.count || 0) >= 8) return res.status(429).json({ error: 'RATE_LIMITED' });
     const deviceHash = sha256(deviceId);
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });

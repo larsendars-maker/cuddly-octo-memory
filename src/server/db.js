@@ -107,6 +107,7 @@ function memQ(text, params=[]) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(2)).toLowerCase()); return result(r?[r]:[]);
   }
   if (s.startsWith('select count(*)::int as count from users where registration_device_hash=$1')) { const n=mem.users.filter(u=>u.registration_device_hash===String(p(1))).length; return result([{count:n}]); }
+  if (s.startsWith('select count(*)::int as count from users where registration_ip=$1 and created_at > now() - interval')) { const cutoff=Date.now()-24*60*60*1000; const n=mem.users.filter(u=>String(u.registration_ip)===String(p(1)) && new Date(u.created_at).getTime()>cutoff).length; return result([{count:n}]); }
   if (s.startsWith('select * from users where lower(username)=lower($1) or lower(email)=lower($1)')) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(1)).toLowerCase()); return result(r?[r]:[]);
   }

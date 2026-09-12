@@ -1,4 +1,4 @@
-# OrbitDesk React Render v35
+# OrbitDesk React Render v40
 
 OrbitDesk browser/workspace for Render.
 
@@ -38,3 +38,10 @@ Verification email delivery now uses Resend over HTTPS; old SMTP/Gmail-sender se
 
 ### Account creation limit
 `MAX_ACCOUNTS_PER_DEVICE=2` allows at most two accounts from the same browser/device identifier.
+
+
+## v40 — защита регистрации
+
+Регистрация защищена rate limit, honeypot-полем, проверкой времени заполнения, автоматическим отсечением типичных bot User-Agent и лимитом 2 аккаунта на устройство. `REQUIRE_EMAIL_VERIFICATION=true` включён и в `render.yaml`.
+
+Для Render можно оставить: `MAX_ACCOUNTS_PER_DEVICE=2` и `BLOCK_AUTOMATION_USER_AGENTS=true`.
