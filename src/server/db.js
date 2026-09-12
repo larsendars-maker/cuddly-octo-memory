@@ -35,7 +35,7 @@ export async function initDb() {
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
       password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
-      email_verified boolean not null default false, email_verified_at timestamptz, blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now()
+      email_verified boolean not null default false, email_verified_at timestamptz, registration_ip inet, registration_device_hash char(64), blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now()
     );
     create table if not exists user_settings (user_id integer primary key references users(id) on delete cascade, payload jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists bookmarks (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, shortcut varchar(40), icon varchar(8) not null default '🌐', category varchar(30) not null default 'custom', position integer not null default 0, created_at timestamptz not null default now());
@@ -53,6 +53,8 @@ create table if not exists visits (id bigserial primary key, user_id integer not
     create table if not exists email_verification_codes (id bigserial primary key, user_id integer unique not null references users(id) on delete cascade, code_hash char(64) not null, attempts integer not null default 0, expires_at timestamptz not null, created_at timestamptz not null default now());
   `);
   await pool.query(`alter table users add column if not exists email_verified boolean not null default false`);
+  await pool.query(`alter table users add column if not exists registration_ip inet`);
+  await pool.query(`alter table users add column if not exists registration_device_hash char(64)`);
   await pool.query(`alter table users add column if not exists email_verified_at timestamptz`);
   await pool.query(`alter table users add column if not exists blocked boolean not null default false`);
   await pool.query(`alter table users add column if not exists block_reason varchar(240)`);
@@ -104,11 +106,12 @@ function memQ(text, params=[]) {
   if (s.startsWith('select id from users where lower(username)=lower($1) or lower(email)=lower($2)')) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(2)).toLowerCase()); return result(r?[r]:[]);
   }
+  if (s.startsWith('select count(*)::int as count from users where registration_device_hash=$1')) { const n=mem.users.filter(u=>u.registration_device_hash===String(p(1))).length; return result([{count:n}]); }
   if (s.startsWith('select * from users where lower(username)=lower($1) or lower(email)=lower($1)')) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(1)).toLowerCase()); return result(r?[r]:[]);
   }
   if (s.startsWith('insert into users(')) {
-    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,blocked:false,block_reason:null,blocked_at:null,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
+    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,registration_ip:p(6),registration_device_hash:p(7),blocked:false,block_reason:null,blocked_at:null,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
   }
   if (s.startsWith('select id,username,email,xp,role,email_verified,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
   if (s.startsWith('select role from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{role:r.role}]:[]); }

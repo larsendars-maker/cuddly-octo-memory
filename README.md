@@ -1,4 +1,4 @@
-# OrbitDesk React Render v19
+# OrbitDesk React Render v35
 
 OrbitDesk browser/workspace for Render.
 
@@ -24,3 +24,17 @@ Verification email delivery now uses Resend over HTTPS; old SMTP/Gmail-sender se
 
 ## Безопасность GitHub
 Не коммить `DATABASE_URL`, `MAIL_BRIDGE_TOKEN`, `PHOTO_ENCRYPTION_KEY`, `GOOGLE_CLIENT_SECRET` или любые API-ключи. Секреты задаются в Render Environment; токен Google Apps Script хранится в Script Properties. Для приватного исходного кода сделай репозиторий GitHub Private.
+
+
+## v35 — Google Apps Script verification restored
+
+- Registration now requires email verification again.
+- The account is created as unverified, then OrbitDesk sends a 6-digit code through the Google Apps Script Mail Bridge.
+- The user is not logged in until the code is confirmed.
+- If the mail bridge is missing or rejects the message, the temporary account is rolled back.
+- `MAIL_PROVIDER=apps-script`, `MAIL_BRIDGE_URL` and `MAIL_BRIDGE_TOKEN` are the intended mail settings.
+- No SMTP configuration is required.
+
+
+### Account creation limit
+`MAX_ACCOUNTS_PER_DEVICE=2` allows at most two accounts from the same browser/device identifier.

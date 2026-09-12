@@ -144,7 +144,15 @@ async function ensureFrontendBuild() {
 }
 const app = express();
 app.set('trust proxy', 1);
-const MAX_ACCOUNTS_PER_IP = Math.max(1, Math.min(10, Number(process.env.MAX_ACCOUNTS_PER_IP || 2)));
+const MAX_ACCOUNTS_PER_DEVICE = Math.max(1, Math.min(2, Number(process.env.MAX_ACCOUNTS_PER_DEVICE || 2)));
+const DEVICE_COOKIE = 'od_device';
+function getOrCreateDeviceId(req, res){
+  const existing = getCookie(req, DEVICE_COOKIE);
+  if(existing && /^[A-Za-z0-9_-]{32,128}$/.test(existing)) return existing;
+  const created = crypto.randomBytes(32).toString('base64url');
+  setCookie(res, DEVICE_COOKIE, created, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'Strict', maxAge: 60 * 60 * 24 * 3650 });
+  return created;
+}
 function clientIp(req){ const xf=String(req.headers['x-forwarded-for']||'').split(',')[0].trim(); return xf || String(req.ip||req.socket.remoteAddress||'unknown').trim(); }
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -287,21 +295,30 @@ app.post('/api/auth/register', async (req, res) => {
     if (!/^\S+@\S+\.\S+$/.test(email || '')) return res.status(400).json({ error: 'BAD_EMAIL' });
     if (typeof password !== 'string' || password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) return res.status(400).json({ error: 'WEAK_PASSWORD' });
     const ip = clientIp(req);
+    const deviceId = getOrCreateDeviceId(req, res);
+    const deviceHash = sha256(deviceId);
     const existing = await q('select id from users where lower(username)=lower($1) or lower(email)=lower($2)', [username, email]);
     if (existing.rowCount) return res.status(409).json({ error: 'ALREADY_EXISTS' });
-    const ipCount = await q('select count(*)::int as count from users where registration_ip=$1', [ip]);
-    if (Number(ipCount.rows[0]?.count || 0) >= MAX_ACCOUNTS_PER_IP) {
-      return res.status(429).json({ error: 'ACCOUNT_LIMIT_REACHED', limit: MAX_ACCOUNTS_PER_IP });
+    const deviceCount = await q('select count(*)::int as count from users where registration_device_hash=$1', [deviceHash]);
+    if (Number(deviceCount.rows[0]?.count || 0) >= MAX_ACCOUNTS_PER_DEVICE) {
+      return res.status(429).json({ error: 'ACCOUNT_LIMIT_REACHED', limit: MAX_ACCOUNTS_PER_DEVICE });
     }
     const h = await hashPassword(password);
     const adminUsername = (process.env.ADMIN_USERNAME || 'Larsenda').toLowerCase();
     const bootstrapAdmin = (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase()) || String(username).toLowerCase() === adminUsername;
     const role = bootstrapAdmin ? 'admin' : 'user';
-    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,registration_ip) values($1,$2,$3,50,$4,true,$5) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role, ip]);
+    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,registration_ip,registration_device_hash) values($1,$2,$3,50,$4,false,$5,$6) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role, ip, deviceHash]);
     const user = r.rows[0];
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
-    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,verification_required:false});
-    res.json({ok:true, pendingVerification:false, user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,rank:rank(user.xp)}});
+    let mailQueued = false;
+    try {
+      await sendVerificationEmail(user, 'verify');
+      mailQueued = true;
+    } catch (mailError) {
+      console.warn('[mail/register] verification mail unavailable; account remains pending for admin approval', mailError?.message || mailError);
+    }
+    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,registration_device_hash:deviceHash,verification_required:true,mail_queued:mailQueued});
+    res.json({ok:true,pendingVerification:true,email:user.email,mailQueued,adminApprovalRequired:true});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -313,6 +330,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (user.blocked) return res.status(403).json({ error: 'ACCOUNT_BLOCKED', reason: user.block_reason || '' });
     if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
+    if (!user.email_verified) return res.status(403).json({ error: 'EMAIL_NOT_VERIFIED', email: user.email, adminApprovalRequired: true });
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);

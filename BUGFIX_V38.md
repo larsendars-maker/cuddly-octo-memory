@@ -1,0 +1,8 @@
+# OrbitDesk v38
+
+- `.env.example` исправлен: `REQUIRE_EMAIL_VERIFICATION=true`.
+- Старый `MAX_ACCOUNTS_PER_IP` заменён примером на фактически используемый `MAX_ACCOUNTS_TOTAL=2`.
+- Версия проекта: 2.6.0.
+- Добавлена инструкция по Private GitHub + Protected Render Environment.
+- Реальные секреты по-прежнему не хранятся в исходниках.
+- Ролевой доступ к админским API уже проверяется сервером; выдавать другу права нужно через админку OrbitDesk, а не через Render.
