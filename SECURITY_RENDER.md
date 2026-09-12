@@ -1,4 +1,4 @@
-# OrbitDesk v38 — защита кода и Render Environment
+# OrbitDesk — защита кода и Render Environment
 
 ## Что важно
 

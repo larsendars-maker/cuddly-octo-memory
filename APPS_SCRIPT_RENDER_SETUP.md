@@ -1,6 +1,6 @@
-# OrbitDesk v35 — Google Apps Script Mail Bridge
+# OrbitDesk — Google Apps Script Mail Bridge
 
-OrbitDesk v35 uses Google Apps Script for verification mail. SMTP is not required.
+OrbitDesk uses Google Apps Script for verification mail. SMTP is not required.
 
 Render Web Service environment variables:
 

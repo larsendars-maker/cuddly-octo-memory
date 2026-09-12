@@ -1,4 +1,4 @@
-# OrbitDesk v11 — Render deployment
+# OrbitDesk — Render deployment
 
 ## 1. GitHub
 Upload the whole project root. Keep the folder structure; do not flatten it into one HTML file.
