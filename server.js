@@ -197,7 +197,7 @@ const securityHeaders = helmet({
   referrerPolicy: { policy: 'no-referrer' },
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   permissionsPolicy: {
-    features: { camera: [], microphone: [], geolocation: [], payment: [], usb: [] }
+    features: { camera: ['self'], microphone: ['self'], geolocation: [], payment: [], usb: [] }
   }
 });
 app.use(securityHeaders);
@@ -756,6 +756,18 @@ wss.on('connection', async (ws, req) => {
         if (!recipient.rowCount || recipient.rows[0].blocked || recipient.rows[0].chat_enabled!==true) return send(ws,{type:'error',message:'Пользователь сейчас недоступен для чата'});
         const r = await q('insert into messages(sender_id,recipient_id,body) values($1,$2,$3) returning id,sender_id,recipient_id,body,created_at', [ws.userId, to, body]);
         const msg = { type: 'chat', message: {...r.rows[0],read_at:null}, sender_name: ws.username }; send(ws, msg); const peer = sockets.get(to); if (peer) send(peer, msg);
+      }
+      if (['call-offer','call-answer','call-ice','call-hangup','call-reject'].includes(String(data.type))) {
+        const to = Number(data.to);
+        if (!Number.isFinite(to) || to === Number(ws.userId)) return;
+        const recipient = await q('select id,blocked,chat_enabled from users where id=$1',[to]);
+        if (!recipient.rowCount || recipient.rows[0].blocked || recipient.rows[0].chat_enabled!==true) return send(ws,{type:'call-error',message:'Пользователь сейчас недоступен для звонка'});
+        const peer = sockets.get(to);
+        if (!peer) return send(ws,{type:'call-error',message:'Пользователь сейчас не в сети'});
+        const payload = { type: data.type, from: Number(ws.userId), fromName: ws.username, callId: String(data.callId||''), mode: data.mode === 'video' ? 'video' : 'audio' };
+        if (data.sdp) payload.sdp=data.sdp;
+        if (data.candidate) payload.candidate=data.candidate;
+        send(peer,payload);
       }
     } catch { send(ws, { type: 'error', message: 'WS error' }); }
   });
