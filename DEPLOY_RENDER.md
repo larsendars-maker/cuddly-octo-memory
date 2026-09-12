@@ -7,7 +7,7 @@ Upload the whole project root. Keep the folder structure; do not flatten it into
 Use **New → Blueprint** and select the GitHub repository. This applies `render.yaml` and creates `orbitdesk-db` automatically.
 
 ## 3. Required mail settings
-Registration requires a six-digit email code. Set these Environment Variables in Render:
+Регистрация больше не требует подтверждения email. После регистрации пользователь сразу попадает в OrbitDesk; чат открывается автоматически через 60 секунд или вручную администратором.
 - SMTP_HOST
 - SMTP_PORT=587
 - SMTP_SECURE=false
@@ -15,7 +15,7 @@ Registration requires a six-digit email code. Set these Environment Variables in
 - SMTP_PASS
 - SMTP_FROM
 
-Email verification uses Brevo HTTP API so it works on Render Free, which blocks outbound SMTP ports 25/465/587. Production registration intentionally returns `MAIL_API_NOT_CONFIGURED` if Brevo is not configured instead of allowing unverified accounts.
+Для текущей версии почта не блокирует регистрацию и вход. Mail Bridge остаётся для служебных писем и будущих сценариев.
 
 ## 4. Google Sheets
 Create OAuth credentials in Google Cloud and add:
@@ -41,9 +41,9 @@ Do not put DATABASE_URL, SMTP_PASS, GOOGLE_CLIENT_SECRET or encryption keys in G
 Keep the same Render Postgres database resource connected to the service. Application deploys do not delete relational data; schema changes use CREATE IF NOT EXISTS / ALTER IF NOT EXISTS and a schema_migrations table. Do not delete/recreate the Postgres resource. On Render Free Postgres, the database itself expires after 30 days; use a paid Postgres plan for long-term production persistence and backups.
 
 ## Администраторы и блокировки (v16)
-- В админ-панели появилась вкладка «Аккаунты»: логин, email, дата создания, подтверждение email, роль и блокировка.
+- В админ-панели появилась вкладка «Аккаунты»: логин, email, роль, доступ к чату, XP и блокировка.
 - Блокировка удаляет активные сессии пользователя и не даёт войти.
-- В «Журнале» фиксируется создание аккаунта с логином/email, подтверждение email, изменения ролей и блокировки.
+- В «Журнале» фиксируется создание аккаунта, выдача/забор чата, изменения ролей, блокировки и другие действия.
 - Если пользователь после регистрации закрыл вкладку, при обычной попытке входа с правильным паролем OrbitDesk автоматически откроет поле для 6-значного кода.
 
 ## Free email delivery (Brevo)

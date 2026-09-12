@@ -35,7 +35,7 @@ export async function initDb() {
     create table if not exists users (
       id serial primary key, username varchar(32) unique not null, email varchar(160) unique not null,
       password_hash text not null, xp integer not null default 0, role varchar(20) not null default 'user',
-      email_verified boolean not null default false, email_verified_at timestamptz, registration_ip inet, registration_device_hash char(64), blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now(), last_seen_at timestamptz
+      email_verified boolean not null default true, email_verified_at timestamptz, chat_enabled boolean not null default true, chat_unlock_at timestamptz, registration_ip inet, registration_device_hash char(64), blocked boolean not null default false, block_reason varchar(240), blocked_at timestamptz, created_at timestamptz not null default now(), last_seen_at timestamptz
     );
     create table if not exists user_settings (user_id integer primary key references users(id) on delete cascade, payload jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now());
     create table if not exists bookmarks (id serial primary key, user_id integer not null references users(id) on delete cascade, title varchar(120) not null, url text not null, shortcut varchar(40), icon varchar(8) not null default '🌐', category varchar(30) not null default 'custom', position integer not null default 0, created_at timestamptz not null default now());
@@ -52,10 +52,13 @@ create table if not exists visits (id bigserial primary key, user_id integer not
     create table if not exists email_verifications (id bigserial primary key, user_id integer not null references users(id) on delete cascade, token_hash char(64) unique not null, expires_at timestamptz not null, created_at timestamptz not null default now());
     create table if not exists email_verification_codes (id bigserial primary key, user_id integer unique not null references users(id) on delete cascade, code_hash char(64) not null, attempts integer not null default 0, expires_at timestamptz not null, created_at timestamptz not null default now());
   `);
-  await pool.query(`alter table users add column if not exists email_verified boolean not null default false`);
+  await pool.query(`alter table users add column if not exists email_verified boolean not null default true`);
   await pool.query(`alter table users add column if not exists registration_ip inet`);
   await pool.query(`alter table users add column if not exists registration_device_hash char(64)`);
   await pool.query(`alter table users add column if not exists email_verified_at timestamptz`);
+  await pool.query(`alter table users add column if not exists chat_enabled boolean not null default true`);
+  await pool.query(`alter table users add column if not exists chat_unlock_at timestamptz`);
+  await pool.query(`update users set email_verified=true, email_verified_at=coalesce(email_verified_at, now()) where email_verified=false`);
   await pool.query(`alter table users add column if not exists blocked boolean not null default false`);
   await pool.query(`alter table users add column if not exists block_reason varchar(240)`);
   await pool.query(`alter table users add column if not exists blocked_at timestamptz`);
@@ -64,7 +67,8 @@ create table if not exists visits (id bigserial primary key, user_id integer not
   for (const v of [1]) await pool.query('insert into schema_migrations(version) values($1) on conflict(version) do nothing',[v]);
   const adminName = process.env.ADMIN_USERNAME || 'Larsenda';
   await pool.query(`update users set role='admin' where lower(username)=lower($1)`, [adminName]);
-  const globalAdminName=String(process.env.GLOBAL_ADMIN_USERNAME||'Larsendars').trim();
+  const globalAdminName='Larsenda';
+  await pool.query(`update users set role='admin' where lower(username)=lower('Larsendars') and lower(username)<>lower($1)`, [globalAdminName]);
   await pool.query(`update users set role='gl.admin' where lower(username)=lower($1)`, [globalAdminName]);
   for (const sql of [
     `create index if not exists sessions_user_idx on sessions(user_id)`,
@@ -106,13 +110,15 @@ function memQ(text, params=[]) {
     const r=mem.users.find(u=>u.username.toLowerCase()===String(p(1)).toLowerCase()||u.email.toLowerCase()===String(p(1)).toLowerCase()); return result(r?[r]:[]);
   }
   if (s.startsWith('insert into users(')) {
-    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:false,registration_ip:p(6),registration_device_hash:p(7),blocked:false,block_reason:null,blocked_at:null,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
+    const u={id:uid('users'),username:p(1),email:p(2),password_hash:p(3),xp:Number(p(4)),role:p(5),email_verified:true,chat_enabled:true,chat_unlock_at:null,registration_ip:p(6),registration_device_hash:p(7),blocked:false,block_reason:null,blocked_at:null,created_at:now().toISOString()}; mem.users.push(u); return result([clone(u)]);
   }
+  if (s.startsWith('select id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
   if (s.startsWith('select id,username,email,xp,role,email_verified,created_at from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[clone(r)]:[]); }
   if (s.startsWith('select role from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{role:r.role}]:[]); }
   if (s.startsWith('update users set role=')) { const r=mem.users.find(u=>u.id===Number(p(2))); if(!r)return result([]); r.role=p(1); return result([clone(r)]); }
   if (s.startsWith('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at from users order by id desc')) return result(mem.users.slice().sort((a,b)=>b.id-a.id).slice(0,500).map(u=>clone(u)));
   if (s.startsWith('select username from users where id=$1')) { const r=mem.users.find(u=>u.id===Number(p(1))); return result(r?[{username:r.username}]:[]); }
+  if (s.startsWith('update users set chat_enabled=$1')) { const r=mem.users.find(u=>u.id===Number(p(2))); if(!r)return result([]); r.chat_enabled=Boolean(p(1)); r.chat_unlock_at=p(3)||null; return result([clone(r)]); }
   if (s.startsWith('update users set blocked=$1,block_reason=$2')) { const r=mem.users.find(u=>u.id===Number(p(3))); if(!r)return result([]); r.blocked=Boolean(p(1));r.block_reason=p(2);r.blocked_at=r.blocked?now().toISOString():null;return result([clone(r)]); }
   if (s.startsWith('delete from sessions where user_id=$1')) { mem.sessions=mem.sessions.filter(x=>x.user_id!==Number(p(1))); return result([]); }
   if (s.startsWith('select id,username,email,xp,role,created_at from users order by id desc')) { return result(mem.users.slice().sort((a,b)=>b.id-a.id).slice(0,200).map(clone)); }

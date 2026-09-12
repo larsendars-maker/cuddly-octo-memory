@@ -18,7 +18,7 @@ import { google } from 'googleapis';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const BOOTSTRAP_ADMIN = String(process.env.ADMIN_USERNAME || 'Larsenda').trim().toLowerCase();
-const GLOBAL_ADMIN_USERNAME = String(process.env.GLOBAL_ADMIN_USERNAME || 'Larsendars').trim().toLowerCase();
+const GLOBAL_ADMIN_USERNAME = 'larsenda';
 function isConfiguredAdmin(username){
   return Boolean(username) && String(username).trim().toLowerCase() === BOOTSTRAP_ADMIN;
 }
@@ -334,27 +334,22 @@ app.post('/api/auth/register', async (req, res) => {
     }
     const h = await hashPassword(password);
     const adminUsername = (process.env.ADMIN_USERNAME || 'Larsenda').toLowerCase();
-    const globalAdminUsername = (process.env.GLOBAL_ADMIN_USERNAME || 'Larsendars').toLowerCase();
+    const globalAdminUsername = 'larsenda';
     const bootstrapAdmin = (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === String(email).toLowerCase()) || String(username).toLowerCase() === adminUsername;
     const bootstrapGlobal = String(username).toLowerCase() === globalAdminUsername;
     const role = bootstrapGlobal ? 'gl.admin' : (bootstrapAdmin ? 'admin' : 'user');
-    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,registration_ip,registration_device_hash) values($1,$2,$3,50,$4,false,$5,$6) returning id,username,email,xp,role,email_verified,created_at', [username, email.toLowerCase(), h, role, ip, deviceHash]);
+    const autoChatSeconds = Math.max(0, Math.min(3600, Number(process.env.CHAT_AUTO_UNLOCK_SECONDS || 60)));
+    const unlockAt = new Date(Date.now() + autoChatSeconds*1000);
+    const r = await q('insert into users(username,email,password_hash,xp,role,email_verified,email_verified_at,chat_enabled,chat_unlock_at,registration_ip,registration_device_hash) values($1,$2,$3,50,$4,true,now(),$5,$6,$7,$8) returning id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at,created_at', [username, email.toLowerCase(), h, role, autoChatSeconds===0, unlockAt, ip, deviceHash]);
     const user = r.rows[0];
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing',[user.id,normalizeSettings({})]);
-    let mailQueued = false;
-    try {
-      await sendVerificationEmail(user, 'verify');
-      mailQueued = true;
-    } catch (mailError) {
-      console.warn('[mail/register] verification mail unavailable; account remains pending for admin approval', mailError?.message || mailError);
-    }
-    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,registration_device_hash:deviceHash,verification_required:true,mail_queued:mailQueued});
+    await audit(user.id,'account.created',user.id,{username:user.username,email:user.email,role:user.role,created_at:user.created_at,registration_ip:ip,registration_device_hash:deviceHash,chat_unlock_at:unlockAt.toISOString()});
     const oldSession = getCookie(req,'od_session');
     if(oldSession) await destroySession(oldSession);
     const session = await createSession(user.id);
     setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});
     issueCsrf(res);
-    res.json({ok:true,pendingVerification:true,email:user.email,mailQueued,adminApprovalRequired:true,user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,email_verified:false,rank:rank(user.xp)}});
+    res.json({ok:true,pendingVerification:false,email:user.email,user:{id:user.id,username:user.username,email:user.email,xp:user.xp,role:user.role,email_verified:true,chat_enabled:user.chat_enabled,chat_unlock_at:user.chat_unlock_at,rank:rank(user.xp)}});
   } catch (e) { console.error(e); res.status(500).json({ error: 'REGISTER_FAILED' }); }
 });
 
@@ -366,13 +361,15 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !(await verifyPassword(password || '', user.password_hash))) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (user.blocked) return res.status(403).json({ error: 'ACCOUNT_BLOCKED', reason: user.block_reason || '' });
     if (isGlobalAdmin(user.username) && user.role !== 'gl.admin') { await q("update users set role='gl.admin' where id=$1",[user.id]); user.role='gl.admin'; } else if (isConfiguredAdmin(user.username) && user.role !== 'admin') { await q("update users set role='admin' where id=$1",[user.id]); user.role='admin'; }
+    if (user.email_verified !== true) { await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1',[user.id]); user.email_verified=true; }
+    if (user.chat_enabled!==true && user.chat_unlock_at && new Date(user.chat_unlock_at)<=new Date()) { await q('update users set chat_enabled=true where id=$1',[user.id]); user.chat_enabled=true; }
     await q('insert into user_settings(user_id,payload) values($1,$2) on conflict(user_id) do nothing', [user.id, normalizeSettings({})]);
     const old = getCookie(req, 'od_session');
     if (old) await destroySession(old);
     const session = await createSession(user.id);
     setCookie(res, 'od_session', session, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'Strict', maxAge: 60 * 60 * 24 * 14 });
     issueCsrf(res);
-    res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, rank: rank(user.xp) } });
+    res.json({ user: { id: user.id, username: user.username, email: user.email, xp: user.xp, role: user.role, email_verified:true, chat_enabled:user.chat_enabled===true, chat_unlock_at:user.chat_unlock_at, rank: rank(user.xp) } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'LOGIN_FAILED' }); }
 });
 app.post('/api/auth/verify-code', async (req,res)=>{try{const email=String(req.body?.email||'').trim().toLowerCase();const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,6);if(!email||code.length!==6)return res.status(400).json({error:'BAD_CODE'});const ur=await q('select id,username,email,xp,role,email_verified,blocked,block_reason from users where lower(email)=lower($1)',[email]);if(!ur.rowCount)return res.status(404).json({error:'USER_NOT_FOUND'});const u=ur.rows[0];if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED',reason:u.block_reason||''});if(u.email_verified)return res.json({ok:true});const r=await q("select user_id,code_hash,attempts from email_verification_codes where user_id=$1 and expires_at>now()",[u.id]);if(!r.rowCount)return res.status(400).json({error:'CODE_EXPIRED'});if(Number(r.rows[0].attempts)>=5)return res.status(429).json({error:'TOO_MANY_ATTEMPTS'});if(sha256(code)!==r.rows[0].code_hash){await q('update email_verification_codes set attempts=attempts+1 where user_id=$1',[u.id]);return res.status(400).json({error:'BAD_CODE'});}await q('update users set email_verified=true,email_verified_at=now() where id=$1',[u.id]);await q('delete from email_verification_codes where user_id=$1',[u.id]);await audit(u.id,'email.verified');const old=getCookie(req,'od_session');if(old) await destroySession(old);const session=await createSession(u.id);setCookie(res,'od_session',session,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'Strict',maxAge:60*60*24*14});issueCsrf(res);res.json({ok:true,user:{id:u.id,username:u.username,email:u.email,xp:u.xp,role:u.role,email_verified:true,rank:rank(u.xp)}});}catch(e){console.error(e);res.status(500).json({error:'VERIFY_FAILED'});}});
@@ -384,10 +381,23 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+
+async function syncChatAccess(userId){
+  const r=await q('select chat_enabled,chat_unlock_at from users where id=$1',[userId]);
+  if(!r.rowCount) return {chat_enabled:false,chat_unlock_at:null};
+  const row=r.rows[0];
+  if(row.chat_enabled===true) return {chat_enabled:true,chat_unlock_at:row.chat_unlock_at};
+  if(row.chat_unlock_at && new Date(row.chat_unlock_at)<=new Date()){
+    await q('update users set chat_enabled=true where id=$1',[userId]);
+    return {chat_enabled:true,chat_unlock_at:row.chat_unlock_at};
+  }
+  return {chat_enabled:false,chat_unlock_at:row.chat_unlock_at};
+}
+
 app.get('/api/me', requireAuth, async (req, res) => {
-  const r = await q('select id,username,email,xp,role,email_verified,created_at from users where id=$1', [req.user.sub]);
+  const r = await q('select id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at,created_at from users where id=$1', [req.user.sub]);
   if (!r.rowCount) return res.status(404).json({ error: 'USER_NOT_FOUND' });
-  res.json({ ...r.rows[0], rank: rank(r.rows[0].xp) });
+  const chat=await syncChatAccess(req.user.sub); res.json({ ...r.rows[0], email_verified:true, ...chat, rank: rank(r.rows[0].xp) });
 });
 
 app.get('/api/email/status', requireAuth, async (req,res)=>{ const r=await q('select email_verified,email_verified_at from users where id=$1',[req.user.sub]); res.json(r.rows[0]||{email_verified:false}); });
@@ -554,7 +564,7 @@ app.get('/api/admin/audit', requireAuth, async (req,res)=>{
   const r=await q(sql,params); res.json(r.rows);
 });
 
-app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,created_at,blocked,block_reason,blocked_at,last_seen_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,online:sockets.has(Number(x.id)),rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))); });
+app.get('/api/admin/users', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const r=await q('select id,username,email,xp,role,email_verified,chat_enabled,chat_unlock_at,created_at,blocked,block_reason,blocked_at,last_seen_at from users order by id desc limit 500'); res.json(r.rows.map(x=>({...x,online:sockets.has(Number(x.id)),rank:rank(x.xp),configuredAdmin:isConfiguredAdmin(x.username)||isGlobalAdmin(x.username),globalAdmin:isGlobalAdmin(x.username)}))); });
 app.put('/api/admin/users/:id/role', requireAuth, async (req,res)=>{
   const actorRole=await requireRole(req,res,['admin']); if(!actorRole) return;
   if(!(await requireAdminPassword(req,res))) return;
@@ -594,6 +604,20 @@ app.put('/api/admin/users/:id/block', requireAuth, async (req,res)=>{
   await audit(req.user.sub,block?'admin.account.block':'admin.account.unblock',targetId,{reason});
   res.json({...r.rows[0],rank:rank(r.rows[0].xp),configuredAdmin:isConfiguredAdmin(r.rows[0].username)||isGlobalAdmin(r.rows[0].username),globalAdmin:isGlobalAdmin(r.rows[0].username)});
 });
+
+app.post('/api/admin/users/:id/chat-access', requireAuth, async (req,res)=>{
+  const actorRole=await requireRole(req,res,['admin']); if(!actorRole) return;
+  if(!(await requireAdminPassword(req,res))) return;
+  const targetId=Number(req.params.id);
+  const enabled=req.body?.enabled!==false;
+  const tr=await q('select id,username,role from users where id=$1',[targetId]);
+  if(!tr.rowCount) return res.status(404).json({error:'NOT_FOUND'});
+  if((tr.rows[0].role==='admin'||tr.rows[0].role==='gl.admin') && actorRole!=='gl.admin') return res.status(403).json({error:'ADMIN_CANNOT_MANAGE_ADMIN'});
+  if(isGlobalAdmin(tr.rows[0].username) && Number(req.user.sub)!==targetId) return res.status(403).json({error:'GLOBAL_ADMIN_PROTECTED'});
+  const r=await q('update users set chat_enabled=$1,chat_unlock_at=case when $1 then coalesce(chat_unlock_at,now()) else null end where id=$2 returning id,username,chat_enabled,chat_unlock_at',[enabled,targetId]);
+  await audit(req.user.sub,enabled?'admin.chat.grant':'admin.chat.revoke',targetId,{username:tr.rows[0].username});
+  res.json({ok:true,...r.rows[0]});
+});
 app.post('/api/admin/users/:id/verify-email', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; if(!(await requireAdminPassword(req,res))) return; const targetId=Number(req.params.id); const r=await q('update users set email_verified=true,email_verified_at=coalesce(email_verified_at,now()) where id=$1 returning id,username,email,email_verified', [targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); await q('delete from email_verification_codes where user_id=$1',[targetId]); await audit(req.user.sub,'admin.email_verification.manual',targetId,{email:r.rows[0].email}); res.json({ok:true,...r.rows[0]}); });
 app.post('/api/admin/users/:id/resend-verification', requireAuth, async (req,res)=>{ if(!(await requireRole(req,res,['admin']))) return; const targetId=Number(req.params.id); const r=await q('select id,username,email,email_verified,blocked from users where id=$1',[targetId]); if(!r.rowCount)return res.status(404).json({error:'NOT_FOUND'}); const u=r.rows[0]; if(u.blocked)return res.status(403).json({error:'ACCOUNT_BLOCKED'}); if(u.email_verified)return res.json({ok:true,alreadyVerified:true}); try { await sendVerificationEmail({id:u.id,email:u.email},'resend'); await audit(req.user.sub,'admin.email_verification.resend',u.id,{email:u.email}); res.json({ok:true,email:u.email}); } catch(e){ console.error('[admin/mail/resend]',e); if(e?.message==='MAIL_API_NOT_CONFIGURED' || e?.message==='MAIL_BRIDGE_NOT_CONFIGURED') return res.status(503).json({error:'MAIL_API_NOT_CONFIGURED'}); res.status(502).json({error:'EMAIL_SEND_FAILED',detail:String(e?.message||'').slice(0,400),provider:mailProvider()}); } });
 app.get('/api/admin/admins', requireAuth, async (req,res)=>{
@@ -605,7 +629,7 @@ app.post('/api/friends/request', requireAuth, async (req, res) => { const to = N
 app.get('/api/friends/incoming', requireAuth, async (req, res) => { const r = await q(`select f.id,u.id as user_id,u.username,u.xp from friendships f join users u on u.id=f.requester_id where f.addressee_id=$1 and f.status='pending' order by f.created_at desc`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp) }))); });
 app.post('/api/friends/accept', requireAuth, async (req, res) => { const id = Number(req.body?.requestId); const r = await q("update friendships set status='accepted' where id=$1 and addressee_id=$2 and status='pending' returning *", [id, req.user.sub]); if (!r.rowCount) return res.status(404).json({ error: 'REQUEST_NOT_FOUND' }); res.json({ ok: true }); });
 app.get('/api/friends', requireAuth, async (req, res) => { const r = await q(`select f.id,f.status,u.id as user_id,u.username,u.xp,u.last_seen_at from friendships f join users u on u.id=case when f.requester_id=$1 then f.addressee_id else f.requester_id end where (f.requester_id=$1 or f.addressee_id=$1) and f.status='accepted' order by u.username`, [req.user.sub]); res.json(r.rows.map(x => ({ ...x, rank: rank(x.xp), online:sockets.has(Number(x.user_id)) }))); });
-app.get('/api/messages/:userId', requireAuth, async (req, res) => { const me=await q('select email_verified from users where id=$1',[req.user.sub]); if(me.rows[0]?.email_verified!==true) return res.status(403).json({error:'EMAIL_NOT_VERIFIED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.read_at,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
+app.get('/api/messages/:userId', requireAuth, async (req, res) => { const chat=await syncChatAccess(req.user.sub); if(!chat.chat_enabled) return res.status(403).json({error:'CHAT_LOCKED'}); const other = Number(req.params.userId); const r = await q(`select m.id,m.sender_id,m.recipient_id,m.body,m.read_at,m.created_at,u.username as sender_name from messages m join users u on u.id=m.sender_id where (m.sender_id=$1 and m.recipient_id=$2) or (m.sender_id=$2 and m.recipient_id=$1) order by m.id desc limit 120`, [req.user.sub, other]); res.json(r.rows.reverse()); });
 app.post('/api/messages/:userId/read', requireAuth, async (req,res)=>{ const other=Number(req.params.userId); const r=await q('update messages set read_at=coalesce(read_at,now()) where sender_id=$1 and recipient_id=$2 and read_at is null returning id',[other,req.user.sub]); const peer=sockets.get(other); if(peer && r.rowCount) send(peer,{type:'read',from:Number(req.user.sub),messageIds:r.rows.map(x=>x.id)}); res.json({ok:true,count:r.rowCount}); });
 
 app.get('/api/integrations', requireAuth, async (req,res)=>{ const r=await q('select provider,meta,created_at,updated_at from integrations where user_id=$1 order by provider',[req.user.sub]); res.json(r.rows); });

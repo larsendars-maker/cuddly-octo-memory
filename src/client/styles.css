@@ -1142,3 +1142,61 @@ html[data-theme="light"] .muted,html[data-theme="light"] .profile-handle{color:#
 .admin-panel-card,.admin-stat,.account-card,.current-admin,.audit-card{transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.account-card:hover,.current-admin:hover,.audit-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--accent) 20%,var(--line-soft));box-shadow:var(--shadow-md)}
 @media(max-width:1100px){.theme-cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:700px){.theme-cards{grid-template-columns:1fr 1fr}.audit-filters{grid-template-columns:1fr}.vk-workspace{padding:12px}.vk-frame{min-height:calc(100vh - 230px)}}
+
+/* OrbitDesk tab bar polish: equal-size tabs that smoothly compact as tabs grow. */
+.topbar{display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden}
+.tabs{--tab-gap:5px;display:flex;align-items:center;gap:var(--tab-gap);flex:1 1 auto;min-width:0;overflow:hidden;padding:0 2px}
+.tabs .tab{
+  box-sizing:border-box;
+  flex:1 1 calc((100% - (var(--tab-gap) * (var(--tab-count) - 1))) / var(--tab-count));
+  min-width:58px;
+  max-width:150px;
+  height:44px;
+  padding:0 10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  transition:width .22s ease, flex-basis .22s ease, padding .22s ease, background .22s ease, transform .18s ease, border-color .22s ease, box-shadow .22s ease;
+}
+.tabs .tab-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tabs .tab-close{
+  flex:0 0 24px;
+  width:24px;
+  height:24px;
+  border-radius:7px;
+  display:grid;
+  place-items:center;
+  color:#6f7d90;
+  line-height:1;
+  font-size:16px;
+  cursor:pointer;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.tabs .tab-close:hover{background:rgba(255,255,255,.08);color:#fff;transform:scale(1.06)}
+.tabs .tab:active{transform:translateY(1px) scale(.995)}
+@media(max-width:900px){
+  .tabs .tab{max-width:none;min-width:54px;padding:0 8px}
+  .tabs .tab-close{flex-basis:22px;width:22px;height:22px}
+}
+@media(max-width:620px){
+  .topbar{gap:5px;padding-left:6px;padding-right:6px}
+  .top-actions{display:none}
+  .tabs .tab{min-width:52px;height:42px;font-size:12px}
+}
+
+/* OrbitDesk 2.10.2 tab system */
+.tabs{flex:1;min-width:0;display:flex;align-items:stretch;gap:4px;overflow:hidden;padding:7px 8px 0;}
+.tab{flex:1 1 150px;min-width:70px;max-width:230px;height:42px;padding:0 8px 0 12px;display:flex;align-items:center;justify-content:space-between;gap:6px;border:1px solid transparent;border-bottom:0;border-radius:12px 12px 0 0;overflow:hidden;transition:flex-basis .22s ease,background .18s ease,color .18s ease,border-color .18s ease;}
+.tab-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tab-close{flex:none!important;margin:0!important;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:#74839a!important;font-size:18px;line-height:1;transition:background .16s ease,color .16s ease,transform .16s ease;}
+.tab-close:hover{background:rgba(255,255,255,.09);color:#fff!important;transform:scale(1.04);}
+.tab.active{border-color:rgba(104,161,255,.22);background:linear-gradient(180deg,rgba(104,161,255,.13),rgba(104,161,255,.06));box-shadow:inset 0 -2px 0 var(--accent);}
+.topbar{overflow:hidden;}
+@media (max-width:1200px){.tab{min-width:70px;padding-left:9px;padding-right:6px}.tab-title{font-size:13px}.tab-close{width:26px;height:26px}}
+@media (max-width:900px){.tab{min-width:64px;flex-basis:110px}.tab-title{font-size:12px}}
+.role-pill.helper-pill{color:#8fd8ff;background:rgba(79,187,255,.09);border-color:rgba(79,187,255,.2)}
+.role-pill.user-pill{color:#aeb9c9;background:rgba(174,185,201,.07);border-color:rgba(174,185,201,.14)}
