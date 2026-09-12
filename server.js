@@ -712,8 +712,18 @@ wss.on('connection', async (ws, req) => {
       return sessionUser(token);
     })();
     if (!user) return ws.close(1008, 'AUTH');
-    if (!user.email_verified) return ws.close(1008, 'EMAIL_NOT_VERIFIED');
-    ws.userId = Number(user.id); ws.username = user.username; sockets.set(ws.userId, ws); await q('update users set last_seen_at=now() where id=$1',[ws.userId]); send(ws, { type: 'ready' }); await broadcastPresence(ws.userId,true);
+    ws.userId = Number(user.id);
+    ws.username = user.username;
+    const access = await syncChatAccess(ws.userId);
+    if (!access.chat_enabled) return ws.close(1008, 'CHAT_LOCKED');
+    const previous = sockets.get(ws.userId);
+    if (previous && previous !== ws) {
+      try { previous.close(4000, 'REPLACED'); } catch {}
+    }
+    sockets.set(ws.userId, ws);
+    await q('update users set last_seen_at=now() where id=$1',[ws.userId]);
+    send(ws, { type: 'ready', chatEnabled: true, userId: ws.userId });
+    await broadcastPresence(ws.userId,true);
   } catch { return ws.close(1011, 'AUTH_ERROR'); }
   ws.on('message', async raw => {
     try {
@@ -722,6 +732,8 @@ wss.on('connection', async (ws, req) => {
       if (!ws.userId) return;
       if (data.type === 'read') { const ids=Array.isArray(data.messageIds)?data.messageIds.map(Number).filter(Number.isFinite).slice(0,100):[]; if(ids.length){ const r=await q(`update messages set read_at=coalesce(read_at,now()) where id=any($1::bigint[]) and recipient_id=$2 returning id,sender_id`,[ids,ws.userId]); const grouped=new Map(); for(const row of r.rows){ const arr=grouped.get(Number(row.sender_id))||[]; arr.push(Number(row.id)); grouped.set(Number(row.sender_id),arr); } for(const [peerId,mid] of grouped){ const peer=sockets.get(peerId); if(peer) send(peer,{type:'read',from:ws.userId,messageIds:mid}); } } return; }
       if (data.type === 'chat') {
+        const access = await syncChatAccess(ws.userId);
+        if (!access.chat_enabled) return send(ws, { type: 'error', message: 'Чат закрыт' });
         const to = Number(data.to); const body = String(data.body || '').normalize('NFKC').trim().slice(0, 2000); if (!to || !body) return;
         const fr = await q(`select 1 from friendships where status='accepted' and ((requester_id=$1 and addressee_id=$2) or (requester_id=$2 and addressee_id=$1))`, [ws.userId, to]);
         if (!fr.rowCount) return send(ws, { type: 'error', message: 'Доступно только друзьям' });
