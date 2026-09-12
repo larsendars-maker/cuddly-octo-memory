@@ -1260,3 +1260,53 @@ html[data-theme="light"] .muted,html[data-theme="light"] .profile-handle{color:#
 
 /* Remove the accidental global light-theme selector that leaked white cards into the dark workspace. */
 [data-theme="light"] .sheets-connect-card,[data-theme="light"] .sheets-guide,[data-theme="light"] .sheet-ai,[data-theme="light"] .sheet-editor-head{background:rgba(255,255,255,.78)!important}
+
+/* OrbitDesk 2.11.4 — compact workspaces, one theme, no overlays */
+html,body,#root,.app,.main,.content{min-height:0!important}
+.content{overflow:hidden!important;display:flex!important;flex-direction:column!important}
+.content > .chat-page,
+.content > .google-sheets-page,
+.content > .site-workspace{flex:1 1 auto!important;min-height:0!important;height:100%!important}
+
+/* Chat must stay inside the current tab */
+.chat-page{height:100%!important;min-height:0!important;overflow:hidden!important;display:flex!important;flex:1 1 auto!important}
+.chat-list{min-height:0!important;overflow:auto!important;flex:0 0 310px!important}
+.chat-main{min-height:0!important;min-width:0!important;height:100%!important;overflow:hidden!important;display:flex!important;flex-direction:column!important}
+.chat-header{flex:0 0 auto!important}
+.messages{min-height:0!important;overflow:auto!important;flex:1 1 auto!important}
+.chat-input{flex:0 0 auto!important}
+.chat-lock-screen{height:100%!important;min-height:0!important;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+
+/* Google Sheets is a work area, not a long page */
+.google-sheets-page{height:100%!important;min-height:0!important;overflow:hidden!important;padding:18px 22px 16px!important;gap:12px!important;display:flex!important;flex-direction:column!important}
+.sheets-hero{flex:0 0 auto!important}
+.sheets-connect-card.compact-connect{flex:0 0 auto!important;min-height:84px!important;padding:14px 18px!important}
+.sheets-layout{flex:1 1 auto!important;min-height:0!important;overflow:hidden!important;display:grid!important;grid-template-columns:280px minmax(0,1fr)!important}
+.sheets-library{min-height:0!important;height:100%!important;overflow:auto!important}
+.sheets-editor{min-height:0!important;height:100%!important;overflow:hidden!important;display:flex!important;flex-direction:column!important}
+.sheet-editor-head{flex:0 0 auto!important}
+.sheet-grid-wrap{flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow:auto!important}
+.sheet-helper-row{flex:0 0 auto!important;padding-top:10px}
+.sheet-ai-collapsed{flex:0 0 auto!important;max-height:280px!important;overflow:auto!important}
+.sheets-guide{flex:0 0 auto!important;max-height:310px!important;overflow:auto!important}
+.table-empty-helper{display:none!important}
+
+/* One default visual theme — hide legacy theme UI if any stale markup appears */
+.theme-cards{display:none!important}
+
+/* Quick sites always become internal OrbitDesk tabs and never replace the current tab */
+.quick-sites-grid .site-card,.compact-sites .site-card{cursor:pointer}
+
+@media(max-width:900px){
+  .chat-list{flex:0 0 250px!important}
+  .sheets-layout{grid-template-columns:230px minmax(0,1fr)!important}
+}
+@media(max-width:700px){
+  .chat-page{flex-direction:column!important}
+  .chat-list{flex:0 0 220px!important;width:100%!important;max-height:220px!important;border-right:0!important;border-bottom:1px solid var(--border)!important}
+  .chat-main{min-height:0!important;flex:1 1 auto!important}
+  .google-sheets-page{padding:12px!important}
+  .sheets-layout{grid-template-columns:1fr!important}
+  .sheets-library{height:190px!important;max-height:190px!important}
+  .sheets-editor{min-height:0!important}
+}
