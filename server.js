@@ -19,6 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const BOOTSTRAP_ADMIN = String(process.env.ADMIN_USERNAME || 'Larsenda').trim().toLowerCase();
 const GLOBAL_ADMIN_USERNAME = 'larsenda';
+const ALLOW_ALL_COUNTRIES = String(process.env.ALLOW_ALL_COUNTRIES ?? 'true').trim().toLowerCase() !== 'false';
 const PRIVILEGED_ROLES = new Set(['assistant','admin','gl.admin']);
 function privilegedGateConfigured(){ return Boolean(String(process.env.PRIVILEGED_LOGIN_PASSWORD_HASH||'').trim()); }
 function verifyPrivilegedGate(password){
@@ -172,6 +173,8 @@ app.set('trust proxy', 1);
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const sockets = new Map();
+const messageCooldowns = new Map();
+const MESSAGE_COOLDOWN_MS = Math.max(500, Math.min(5000, Number(process.env.CHAT_MESSAGE_COOLDOWN_MS || 1000)));
 function friendPeerIds(userId){ return q(`select case when requester_id=$1 then addressee_id else requester_id end as user_id from friendships where status='accepted' and (requester_id=$1 or addressee_id=$1)`,[userId]).then(r=>r.rows.map(x=>Number(x.user_id))).catch(()=>[]); }
 async function broadcastPresence(userId,online){ const peers=await friendPeerIds(userId); for(const id of peers){ const peer=sockets.get(id); if(peer) send(peer,{type:'presence',userId:Number(userId),online}); } }
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
@@ -201,7 +204,7 @@ const securityHeaders = helmet({
   }
 });
 app.use(securityHeaders);
-app.use((req,res,next)=>{ res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
+app.use((req,res,next)=>{ if (ALLOW_ALL_COUNTRIES) res.setHeader('X-OrbitDesk-Global-Access','enabled'); res.setHeader('Cache-Control','no-store'); if(req.path.startsWith('/api/')) res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive'); next(); });
 app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'dist'), { extensions: ['html'], etag: true, maxAge: '1h' }));
 app.use((req,res,next)=>{
@@ -752,6 +755,12 @@ wss.on('connection', async (ws, req) => {
         const access = await syncChatAccess(ws.userId);
         if (!access.chat_enabled) return send(ws, { type: 'error', message: 'Чат закрыт' });
         const to = Number(data.to); const body = String(data.body || '').normalize('NFKC').trim().slice(0, 2000); if (!to || !body) return;
+        const cooldownKey = `${ws.userId}:${to}`;
+        const nowMs = Date.now();
+        const lastMs = messageCooldowns.get(cooldownKey) || 0;
+        const remainingMs = MESSAGE_COOLDOWN_MS - (nowMs - lastMs);
+        if (remainingMs > 0) return send(ws, { type:'error', message:'Слишком быстро. Подожди немного.', code:'CHAT_COOLDOWN', retryAfterMs:remainingMs });
+        messageCooldowns.set(cooldownKey, nowMs);
         const recipient = await q('select id,username,chat_enabled,blocked from users where id=$1',[to]);
         if (!recipient.rowCount || recipient.rows[0].blocked || recipient.rows[0].chat_enabled!==true) return send(ws,{type:'error',message:'Пользователь сейчас недоступен для чата'});
         const r = await q('insert into messages(sender_id,recipient_id,body) values($1,$2,$3) returning id,sender_id,recipient_id,body,created_at', [ws.userId, to, body]);

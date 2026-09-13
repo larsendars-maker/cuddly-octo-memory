@@ -55,3 +55,14 @@ SMTP/Resend для основной схемы не нужны.
 - Добавлены аудио- и видеозвонки в чате через WebRTC + WebSocket signalling.
 - Сообщения в чате автоматически прокручиваются к последнему сообщению.
 - Разрешены camera/microphone для звонков только для самого OrbitDesk.
+
+
+### Доступ из разных стран
+OrbitDesk не использует геоблокировку по стране. `ALLOW_ALL_COUNTRIES=true` оставляет доступ открытым из любых стран и сетей; IP используется только для rate-limit/защиты регистрации, а не для запрета страны. Сам Render Web Service также не ограничивает пользователей по стране на уровне приложения.
+
+## 2.12.0 — Chat / Calls / Sites
+- Chat message cooldown: 1000 ms (configurable by `CHAT_MESSAGE_COOLDOWN_MS`).
+- Browser notifications for incoming messages and calls.
+- Audio/video call media constraints and bitrate tuning improved.
+- Multiple STUN servers for better WebRTC connectivity.
+- Sites that block iframe embedding now fall back to normal browser opening instead of claiming there is no internet.
